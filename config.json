@@ -41,7 +41,7 @@
     "minute_offset": 5,
     "valid_batch_intervals": [1, 2, 4],
     "valid_priority_intervals": [15, 30, 60],
-    "priority_min_signals": 4
+    "priority_min_signals": 3
   },
   "display": {
     "timezone": "Asia/Singapore",

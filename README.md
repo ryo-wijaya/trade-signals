@@ -12,7 +12,7 @@
 Two background jobs run Mon-Fri:
 
 - **Batch report** — sends a full summary for every ticker once daily after market close (4:05pm ET by default).
-- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 4 of 5 indicators agree on direction and the price structure rule confirms the move.
+- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 3 of 5 indicators agree on direction and the price structure rule confirms the move.
 
 Both intervals are configurable at runtime without restarting.
 
@@ -232,7 +232,7 @@ Rules run after indicators compute. All rules must pass for a priority alert to 
 
 ## Indicator reference
 
-A priority alert fires when at least 4 of 5 indicators agree on direction and the price structure rule passes.
+A priority alert fires when at least 3 of 5 indicators agree on direction and the price structure rule passes.
 
 ### 50 EMA
 

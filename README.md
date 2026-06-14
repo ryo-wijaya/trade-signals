@@ -52,6 +52,7 @@ TELEGRAM_BOT_TOKEN=your_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 TELEGRAM_ALLOWED_CHAT_IDS=your_chat_id_here   # comma-separated; only these can run bot commands
 TRADE_SIGNALS_API_KEY=a_long_random_secret    # required to call the REST API; omit to disable auth in dev
+OPENROUTER_API_KEY=your_openrouter_key        # required for /signalsplus; omit to disable LLM summaries
 ```
 
 **4. Run**
@@ -67,6 +68,9 @@ uvicorn main:app           # production
 |---|---|
 | `/signals` | Run analysis for the full watchlist |
 | `/signals AAPL TSLA` | Run analysis for specific tickers |
+| `/signalsplus` | Signals + live LLM market summary for every watchlist ticker |
+| `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
+| `/explain` | How to read each indicator |
 | `/watchlist` | View current watchlist |
 | `/add AAPL TSLA` | Add tickers |
 | `/remove AAPL` | Remove a ticker |
@@ -155,11 +159,20 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "timestamp_format": "%d %b %Y  %I:%M %p SGT"
   },
 
-  "market": { "calendar": "NYSE" }
+  "market": { "calendar": "NYSE" },
+
+  "llm": {
+    "model": "perplexity/sonar-pro",
+    "max_tokens": 250
+  }
 }
 ```
 
 `window_days` values are trading-day counts and automatically convert to the correct bar count based on `resample`. At `"1d"`, 200 days = 200 bars exactly.
+
+The `explanations` array is what `/explain` sends to Telegram. Each entry has a `"name"` and a `"text"` field. Add, remove, or edit entries freely — the command reads this at runtime, no restart needed.
+
+`llm.model` can be any model slug from [openrouter.ai/models](https://openrouter.ai/models). Models with `online` in the name perform live web searches. `llm.max_tokens` controls the maximum summary length.
 
 ## Project structure
 
@@ -180,11 +193,14 @@ app/
   commands/         # one file per command group
     registry.py     # @command decorator
     signals.py
+    signals_plus.py # /signalsplus with LLM summaries
+    explain.py      # /explain indicator guide
     watchlist.py
     settings.py
     admin.py
   auth.py           # REST API key validation
   bot.py            # Telegram polling loop
+  llm.py            # OpenRouter client
   scheduler.py      # background jobs
   telegram.py       # message formatting
   config.py         # config.json read/write
@@ -266,6 +282,14 @@ async def handle_mycommand(args: list[str], chat_id: str) -> None:
 ```
 
 If you create a new file, import it in `app/commands/__init__.py`.
+
+## LLM market summaries
+
+`/signalsplus` runs the same indicator analysis as `/signals`, then calls OpenRouter for each ticker concurrently to fetch a 2–3 sentence recommendation that combines the technical signals with live news and market sentiment.
+
+The default model is `perplexity/sonar-pro`, which searches the web as part of its response. You can switch to any model on OpenRouter by changing `llm.model` in `config.json`. If `OPENROUTER_API_KEY` is not set, `/signalsplus` falls back to showing indicators only (no error).
+
+`/signals` is never affected — it never calls the LLM.
 
 ## Indicator reference
 

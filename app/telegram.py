@@ -29,7 +29,7 @@ async def send(text: str, chat_id: str | None = None) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     target = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not target:
-        print("[telegram] missing credentials – message not sent")
+        log.warning("missing Telegram credentials — message not sent")
         return
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -40,10 +40,6 @@ async def send(text: str, chat_id: str | None = None) -> None:
             log.error("telegram send failed %d: %s", resp.status_code, resp.text)
 
 
-def _sig(signal: int) -> str:
-    return "BUY " if signal == 1 else "SELL" if signal == -1 else "NEUT"
-
-
 def _call(score: int, max_score: int) -> str:
     if score == max_score:  return "Strong Buy"
     if score > 0:           return "Buy"
@@ -52,12 +48,16 @@ def _call(score: int, max_score: int) -> str:
     return "Strong Sell"
 
 
+_SEP = "─" * 26
+_STOCK_SEP = "━" * 26
+
+
 def _block(r: IndicatorResult) -> str:
-    """Single monospace block: indicators then rules, label-first layout."""
-    rows = [
-        f"{label:<10}  {_sig(sig.signal)}  {html.escape(sig.display)}"
-        for _, label, sig in r.signals
-    ]
+    rows = []
+    for i, (_, label, sig) in enumerate(r.signals):
+        if i > 0:
+            rows.append(_SEP)
+        rows.append(f"{label:<10}  {html.escape(sig.display)}")
 
     if r.rule_results:
         rows.append("")
@@ -78,13 +78,26 @@ def _block(r: IndicatorResult) -> str:
     return "<code>" + "\n".join(rows) + "</code>"
 
 
-def build_batch_report(results: list[IndicatorResult], timestamp: str, title: str = "Market Report") -> str:
-    lines = [f"<b>{title}</b>  {timestamp}\n"]
-    for r in results:
-        lines.append(f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score, len(r.signals))}")
-        lines.append(_block(r))
+def build_batch_report(
+    results: list[IndicatorResult],
+    timestamp: str,
+    title: str = "Market Report",
+    summaries: dict[str, str] | None = None,
+) -> str:
+    lines = [f"<b>{title}</b>  {timestamp}"]
+    for i, r in enumerate(results):
         lines.append("")
-    lines.append("-" * 24)
+        if i > 0:
+            lines.append(_STOCK_SEP)
+            lines.append("")
+        buys     = sum(1 for _, _, s in r.signals if s.signal == 1)
+        sells    = sum(1 for _, _, s in r.signals if s.signal == -1)
+        neutrals = sum(1 for _, _, s in r.signals if s.signal == 0)
+        breakdown = f"▲{buys} ▼{sells} ─{neutrals}"
+        lines.append(f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score, len(r.signals))}  {breakdown}")
+        lines.append(_block(r))
+        if summaries and (summary := summaries.get(r.ticker)):
+            lines.append(f"\n{html.escape(summary)}")
     return "\n".join(lines)
 
 

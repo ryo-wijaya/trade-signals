@@ -1,3 +1,4 @@
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -8,6 +9,7 @@ import yfinance as yf
 from app.indicators.base import BaseIndicator, SignalResult
 from app.rules import apply_rules
 
+log = logging.getLogger(__name__)
 _INDICATORS: list[BaseIndicator] = []
 
 
@@ -98,5 +100,5 @@ def analyze_tickers(tickers: list[str]) -> tuple[list[IndicatorResult], list[Ind
             if _INDICATORS and abs(r.score) >= min_signals and r.rules_passed:
                 alerts.append(r)
         except Exception as exc:
-            print(f"[indicators] {ticker}: {exc}")
+            log.error("analyze failed for %s: %s", ticker, exc)
     return results, alerts

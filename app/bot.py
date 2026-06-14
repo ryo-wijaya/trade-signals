@@ -24,10 +24,10 @@ async def _get_updates(offset: int | None) -> list[dict]:
 
 async def start_polling() -> None:
     if not os.getenv("TELEGRAM_BOT_TOKEN"):
-        print("[bot] TELEGRAM_BOT_TOKEN not set – polling disabled")
+        log.warning("TELEGRAM_BOT_TOKEN not set — polling disabled")
         return
 
-    print("[bot] polling started")
+    log.info("polling started")
     offset: int | None = None
 
     while True:
@@ -49,8 +49,8 @@ async def start_polling() -> None:
                         args = [a.upper() for a in parts[1:]]
                         asyncio.create_task(dispatch(cmd, args, chat_id))
         except asyncio.CancelledError:
-            print("[bot] polling stopped")
+            log.info("polling stopped")
             break
         except Exception as exc:
-            print(f"[bot] polling error: {exc}")
+            log.error("polling error: %s", exc)
             await asyncio.sleep(5)

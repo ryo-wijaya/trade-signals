@@ -49,5 +49,36 @@
   },
   "market": {
     "calendar": "NYSE"
-  }
+  },
+  "llm": {
+    "model": "perplexity/sonar-pro",
+    "max_tokens": 150
+  },
+
+  "explanations": [
+    {
+      "name": "50 EMA",
+      "text": "Medium-term trend (~10 weeks). Price above = uptrend. Price below = downtrend. Reacts faster than the 200 EMA — useful for catching trend changes earlier."
+    },
+    {
+      "name": "200 EMA",
+      "text": "Long-term trend (~40 weeks). The institutional bull/bear benchmark. Price above = stock has been strong for months. Price below = sustained downtrend. Being far below it doesn't mean it'll bounce — it means the trend has been down a long time."
+    },
+    {
+      "name": "Bollinger Bands",
+      "text": "Measures price relative to a 20-day volatility range (±2 std deviations). Near lower band = oversold, price cheap vs recent range. Mid-range = neutral. Near upper band = overbought, price stretched. Mean reversion signal — extreme readings suggest a move back toward the middle."
+    },
+    {
+      "name": "RSI",
+      "text": "Momentum gauge — measures the speed of recent gains vs losses, not the price level. RSI above its own 14-day average = momentum accelerating (bullish). RSI below = momentum decelerating (bearish). A stock can have RSI at 45 and still be gaining momentum if it's rising."
+    },
+    {
+      "name": "Stochastic",
+      "text": "Where today's close sits within the 14-day high-low range. Below 20 = oversold, price near recent lows. 20-80 = neutral. Above 80 = overbought, price near recent highs. In a strong downtrend, can stay below 20 for weeks — oversold doesn't always mean imminent bounce."
+    },
+    {
+      "name": "Structure Rule",
+      "text": "Gate on priority alerts only — doesn't affect the batch report score. For a buy alert: current bar must close higher AND make a higher low vs the prior bar. For a sell alert: lower close AND lower high. Blocks dead-cat bounces (higher close but lower low) and false breakouts."
+    }
+  ]
 }

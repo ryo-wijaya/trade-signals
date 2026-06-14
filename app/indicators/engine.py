@@ -3,13 +3,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import pandas as pd
-import pytz
 import yfinance as yf
 
 from app.indicators.base import BaseIndicator, SignalResult
 from app.rules import apply_rules
 
-EST = pytz.timezone("America/New_York")
 _INDICATORS: list[BaseIndicator] = []
 
 
@@ -33,13 +31,15 @@ class IndicatorResult:
 
 def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
     from app.config import load_config
-    dcfg = load_config().get("data", {})
+    cfg = load_config()
+    dcfg = cfg.get("data", {})
     period = dcfg.get("history_period", "200d")
     interval = dcfg.get("bar_interval", "1h")
     rth_start = dcfg.get("rth_start", "09:30")
     rth_end = dcfg.get("rth_end", "16:00")
     resample = dcfg.get("resample", "2h")
     retries = dcfg.get("fetch_retries", 3)
+    exchange_tz = cfg.get("scheduler", {}).get("exchange_timezone", "America/New_York")
 
     for attempt in range(retries):
         try:
@@ -62,7 +62,10 @@ def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
     df.index = pd.to_datetime(df.index)
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
-    df.index = df.index.tz_convert("America/New_York")
+    df.index = df.index.tz_convert(exchange_tz)
+
+    if resample.endswith("d") or interval.endswith("d"):
+        return df.dropna()
 
     rth = df.between_time(rth_start, rth_end)
     return rth.resample(resample, label="right", closed="right").agg(

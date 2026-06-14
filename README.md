@@ -1,17 +1,15 @@
 # trade-signals
 
-FastAPI app that runs technical analysis on a stock watchlist during market hours and sends reports to Telegram. Indicators use the [`ta`](https://github.com/bukosabino/ta) library on 2-hour RTH bars from Yahoo Finance.
+FastAPI app that runs technical analysis on a stock watchlist and sends reports to Telegram. Indicators use the [`ta`](https://github.com/bukosabino/ta) library on daily bars from Yahoo Finance.
 
 ## How it works
 
-Two background jobs run Mon-Fri during US market hours:
+Two background jobs run Mon-Fri:
 
-- **Batch report** - sends a full summary for every ticker. Default every 2 hours, configurable to 1, 2, or 4 hours.
-- **Priority alert** - runs silently on a shorter interval. Fires only when all indicators agree on direction and the price structure rule confirms the move. Configurable to 15, 30, or 60 minutes.
+- **Batch report** — sends a full summary for every ticker once daily after market close (4:05pm ET by default).
+- **Priority alert** — runs every 30 minutes during market hours. Fires only when all indicators agree on direction and the price structure rule confirms the move.
 
-Both can be changed at runtime without restarting.
-
-Indicators run on 2-hour RTH bars:
+Both intervals are configurable at runtime without restarting.
 
 | Indicator | Buy | Sell |
 |---|---|---|
@@ -20,6 +18,8 @@ Indicators run on 2-hour RTH bars:
 | RSI(14) + RSI MA(14) | RSI above its MA | RSI below its MA |
 | CMF(20) | CMF above +0.05 | CMF below -0.05 |
 
+Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
+
 ## Setup
 
 **1. Clone and create a virtual environment**
@@ -27,18 +27,16 @@ Indicators run on 2-hour RTH bars:
 ```bash
 git clone https://github.com/your-username/trade-signals.git
 cd trade-signals
-python -m venv .venv
-source .venv/bin/activate
+python -m venv env
+source env/bin/activate
 pip install -r requirements.txt
 ```
 
 **2. Create a Telegram bot**
 
-- Open Telegram and message `@BotFather`
-- Send `/newbot` and follow the prompts to get a bot token
-- Start a conversation with your bot, then open this URL in a browser:
-  `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
-- Send any message to the bot, refresh the URL, and find `"chat":{"id": ...}`. That number is your chat ID.
+- Message `@BotFather` on Telegram, send `/newbot`, follow the prompts to get a bot token
+- Start a conversation with your bot, then open: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
+- Send any message to the bot, refresh that URL, find `"chat":{"id": ...}` — that number is your chat ID
 
 **3. Configure environment variables**
 
@@ -70,12 +68,12 @@ uvicorn main:app           # production
 | `/add AAPL TSLA` | Add tickers |
 | `/remove AAPL` | Remove a ticker |
 | `/interval` | View or change batch report frequency |
-| `/interval 1` | Set to 1, 2, or 4 hours |
 | `/priority` | View or change priority alert frequency |
-| `/priority 15` | Set to 15, 30, or 60 minutes |
 | `/config` | Show all current settings |
 | `/run` | Manually trigger a broadcast |
 | `/help` | Show all commands |
+
+Plain symbols default to US listings. For other exchanges use Yahoo Finance's suffix (e.g. `9988.HK`, `VOD.L`, `BMW.DE`).
 
 ## REST API
 
@@ -93,20 +91,52 @@ POST /api/config/priority-interval  {"priority_interval_minutes": 15}
 
 Interactive docs at `http://localhost:8000/docs`.
 
-## Supported exchanges
+## Configuration reference
 
-Plain symbols default to US listings. For other exchanges use Yahoo Finance's suffix:
+All settings live in `config.json`. Watchlist and interval changes take effect immediately. Indicator parameters and scheduler settings require a restart.
 
-| Ticker | Exchange |
-|---|---|
-| `AAPL` | NASDAQ |
-| `BABA` | NYSE (US ADR) |
-| `9988.HK` | Hong Kong |
-| `VOD.L` | London |
-| `BMW.DE` | Frankfurt |
-| `MC.PA` | Euronext Paris |
+```json
+{
+  "watchlist": ["AMZN", "BABA", "MSFT", "NVDA"],
+  "interval_hours": 2,
+  "priority_interval_minutes": 30,
 
-Works with `/add` like any other ticker: `/add 9988.HK BMW.DE`
+  "indicators": {
+    "ema":       { "window_days": 200 },
+    "bollinger": { "window_days": 20, "std_dev": 2, "buffer_pct": 0.01 },
+    "rsi":       { "window_days": 14, "ma_window_days": 14 },
+    "cmf":       { "window_days": 20, "threshold": 0.05 }
+  },
+
+  "data": {
+    "history_period": "400d",
+    "bar_interval": "1d",
+    "rth_start": "09:30",
+    "rth_end": "16:00",
+    "resample": "1d",
+    "fetch_retries": 3,
+    "ticker_sleep_seconds": 0.5
+  },
+
+  "scheduler": {
+    "exchange_timezone": "America/New_York",
+    "rth_open_hour": 10,
+    "rth_close_hour": 16,
+    "minute_offset": 5,
+    "valid_batch_intervals": [1, 2, 4],
+    "valid_priority_intervals": [15, 30, 60]
+  },
+
+  "display": {
+    "timezone": "Asia/Singapore",
+    "timestamp_format": "%d %b %Y  %I:%M %p SGT"
+  },
+
+  "market": { "calendar": "NYSE" }
+}
+```
+
+`window_days` values are trading-day counts and automatically convert to the correct bar count based on `resample`. At `"1d"`, 200 days = 200 bars exactly.
 
 ## Project structure
 
@@ -151,7 +181,7 @@ class MyIndicator(BaseIndicator):
     label = "My Indicator"
 
     def compute(self, df: pd.DataFrame) -> SignalResult:
-        # df columns: Open, High, Low, Close, Volume (2h RTH bars)
+        # df columns: Open, High, Low, Close, Volume (daily bars)
         value = ...
         signal = 1 if value > threshold else -1 if value < threshold else 0
         return SignalResult(signal=signal, display=f"{value:.2f}")
@@ -182,10 +212,10 @@ class MyRule(BaseRule):
     name = "my_rule"
 
     def check(self, df: pd.DataFrame, result) -> RuleResult:
-        # result.score: total signal score
+        # result.score: total signal score (positive = bullish, negative = bearish)
         # result.price: current close
         # result.prev_close: previous bar close
-        # df: full OHLCV dataframe (2h RTH bars)
+        # df: full OHLCV dataframe (daily bars)
         if some_condition:
             return RuleResult(passed=False, reason="explanation shown in report")
         return RuleResult(passed=True, reason="")
@@ -201,8 +231,6 @@ from app.rules import price_structure, your_rule  # noqa: F401
 
 ## Adding a bot command
 
-Add a function to any file in `app/commands/`:
-
 ```python
 from app.commands.registry import command
 from app.telegram import send
@@ -212,62 +240,7 @@ async def handle_mycommand(args: list[str], chat_id: str) -> None:
     await send("Hello.", chat_id=chat_id)
 ```
 
-If you create a new file, import it in `app/commands/__init__.py`. It registers itself and appears in `/help`.
-
-## Configuration reference
-
-All settings live in `config.json`. Changes to watchlist and intervals take effect immediately. Indicator parameters and scheduler settings require a restart.
-
-```json
-{
-  "watchlist": ["AMZN", "MSFT"],
-  "interval_hours": 2,
-  "priority_interval_minutes": 30,
-
-  "indicators": {
-    "ema":       { "window": 200 },
-    "bollinger": { "window": 20, "std_dev": 2, "buffer_pct": 0.01 },
-    "rsi":       { "window": 14, "ma_window": 14 },
-    "cmf":       { "window": 20, "threshold": 0.05 }
-  },
-
-  "data": {
-    "history_period": "200d",
-    "bar_interval": "1h",
-    "rth_start": "09:30",
-    "rth_end": "16:00",
-    "resample": "2h",
-    "fetch_retries": 3,
-    "ticker_sleep_seconds": 0.5
-  },
-
-  "scheduler": {
-    "exchange_timezone": "America/New_York",
-    "rth_open_hour": 10,
-    "rth_close_hour": 16,
-    "minute_offset": 5,
-    "valid_batch_intervals": [1, 2, 4],
-    "valid_priority_intervals": [15, 30, 60]
-  },
-
-  "display": {
-    "timezone": "Asia/Singapore",
-    "timestamp_format": "%d %b %Y  %I:%M %p SGT"
-  },
-
-  "market": {
-    "calendar": "NYSE"
-  }
-}
-```
-
-## Requirements
-
-- Python 3.12+
-- Telegram bot token (free via @BotFather)
-- No paid data feeds (Yahoo Finance)
-
----
+If you create a new file, import it in `app/commands/__init__.py`.
 
 ## Indicator reference
 
@@ -275,22 +248,28 @@ All four indicators must agree before a priority alert fires.
 
 ### 200 EMA
 
-Tracks the long-term trend. Price above the 200 EMA means the stock is in an uptrend. Price below means a downtrend. Most traders treat this as a hard filter and will not buy a stock below its 200 EMA.
+Tracks the long-term trend. Price above the 200 EMA means the stock is in an uptrend; below means a downtrend. Most traders treat this as a hard filter and will not buy a stock below its 200 EMA.
 
 ### Bollinger Bands
 
-Places upper and lower bands 2 standard deviations from a 20-period moving average. Price near the lower band is cheap relative to recent history. Price near the upper band is extended. A 1% buffer is applied to each band to reduce noise.
+Places upper and lower bands 2 standard deviations from a 20-day moving average. Price near the lower band is cheap relative to recent history; near the upper band is extended. A 1% buffer is applied to each band to reduce noise.
 
 ### RSI + RSI MA
 
-RSI measures the speed of recent price moves on a scale of 0 to 100. This app compares RSI to its own 14-period moving average rather than using fixed levels like 70/30. When RSI crosses above its MA, momentum is picking up. When it crosses below, momentum is fading. This reacts earlier than fixed thresholds.
+RSI measures the speed of recent price moves on a 0–100 scale. This app compares RSI to its own 14-day moving average rather than using fixed thresholds like 70/30. When RSI crosses above its MA, momentum is picking up; when it crosses below, momentum is fading. This reacts earlier than fixed levels.
 
 ### CMF
 
-Chaikin Money Flow measures whether volume is flowing into or out of a stock. A reading above +0.05 signals genuine buying pressure. A reading below -0.05 signals genuine selling pressure. The zone between is treated as neutral, filtering out low-conviction readings. A stock rising on negative CMF is a warning the move may not last.
+Chaikin Money Flow measures whether volume is flowing into or out of a stock. Above +0.05 signals buying pressure; below -0.05 signals selling pressure. The zone in between is treated as neutral to filter out low-conviction readings.
 
 ### Price structure confirmation
 
 Priority alerts require a two-bar price structure. For a buy: the current bar must close above the previous close AND its low must be above the previous bar's low. For a sell: close below the previous close AND high below the previous bar's high.
 
-The higher-low check matters most. A dead-cat bounce can produce a higher close while still making a lower low. Requiring both conditions filters those out. This is a gate on the alert, not an additional indicator.
+This rules out dead-cat bounces (higher close but lower low) and short-squeeze fades (lower close but higher high).
+
+## Requirements
+
+- Python 3.12+
+- Telegram bot token (free via @BotFather)
+- No paid data feeds — uses Yahoo Finance

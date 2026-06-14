@@ -4,28 +4,28 @@
   "priority_interval_minutes": 30,
   "indicators": {
     "ema": {
-      "window": 200
+      "window_days": 200
     },
     "bollinger": {
-      "window": 20,
+      "window_days": 20,
       "std_dev": 2,
       "buffer_pct": 0.01
     },
     "rsi": {
-      "window": 14,
-      "ma_window": 14
+      "window_days": 14,
+      "ma_window_days": 14
     },
     "cmf": {
-      "window": 20,
+      "window_days": 20,
       "threshold": 0.05
     }
   },
   "data": {
-    "history_period": "200d",
-    "bar_interval": "1h",
+    "history_period": "400d",
+    "bar_interval": "1d",
     "rth_start": "09:30",
     "rth_end": "16:00",
-    "resample": "2h",
+    "resample": "1d",
     "fetch_retries": 3,
     "ticker_sleep_seconds": 0.5
   },

@@ -2,7 +2,7 @@ import logging
 from app.commands.registry import command
 from app.config import (
     load_watchlist, load_interval, load_priority_interval,
-    load_valid_intervals, load_valid_priority_intervals,
+    load_valid_intervals, load_valid_priority_intervals, load_config,
 )
 from app.telegram import send
 
@@ -14,12 +14,20 @@ async def handle_config(args: list[str], chat_id: str) -> None:
     tickers = load_watchlist()
     interval = load_interval()
     priority = load_priority_interval()
+    cfg = load_config()
+    scfg = cfg.get("scheduler", {})
+    is_daily = cfg.get("data", {}).get("resample", "2h").endswith("d")
+    close_h = scfg.get("rth_close_hour", 16)
+    open_h = scfg.get("rth_open_hour", 10)
+    offset = scfg.get("minute_offset", 5)
+    close_fmt = f"{close_h % 12 or 12}:{offset:02d}{'am' if close_h < 12 else 'pm'} ET"
     log.info("config queried: watchlist=%s interval=%sh priority=%smin", tickers, interval, priority)
     body = "\n".join(f"  {t}" for t in tickers)
+    batch_desc = f"Once daily at {close_fmt}" if is_daily else f"Every {interval}h (Mon-Fri, {open_h}:{offset:02d}-{close_h}:{offset:02d} ET)"
     await send(
         f"<b>Config</b>\n\n"
         f"<b>Watchlist ({len(tickers)} tickers)</b>\n{body}\n\n"
-        f"<b>Batch Report</b>\n  Every {interval}h (Mon-Fri, 10:05-16:05 ET)\n\n"
+        f"<b>Batch Report</b>\n  {batch_desc}\n\n"
         f"<b>Priority Check</b>\n  Every {priority}min (Mon-Fri, 10:05-16:05 ET)",
         chat_id=chat_id,
     )
@@ -32,9 +40,10 @@ async def handle_interval(args: list[str], chat_id: str) -> None:
     if not args:
         current = load_interval()
         log.info("interval queried: %sh", current)
+        valid = load_valid_intervals()
         await send(
             f"Batch report frequency: every {current}h\n"
-            f"Change with /interval 1, /interval 2, or /interval 4",
+            f"Change with: {' '.join(f'/interval {v}' for v in valid)}",
             chat_id=chat_id,
         )
         return
@@ -61,9 +70,10 @@ async def handle_priority(args: list[str], chat_id: str) -> None:
     if not args:
         current = load_priority_interval()
         log.info("priority interval queried: %smin", current)
+        valid = load_valid_priority_intervals()
         await send(
             f"Priority check frequency: every {current}min\n"
-            f"Change with /priority 15, /priority 30, or /priority 60",
+            f"Change with: {' '.join(f'/priority {v}' for v in valid)}",
             chat_id=chat_id,
         )
         return

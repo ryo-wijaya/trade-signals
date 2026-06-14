@@ -8,13 +8,13 @@ _DEFAULTS = {
     "interval_hours": 2,
     "priority_interval_minutes": 30,
     "indicators": {
-        "ema": {"window": 200},
-        "bollinger": {"window": 20, "std_dev": 2, "buffer_pct": 0.01},
-        "rsi": {"window": 14, "ma_window": 14},
-        "cmf": {"window": 20, "threshold": 0.05},
+        "ema": {"window_days": 200},
+        "bollinger": {"window_days": 20, "std_dev": 2, "buffer_pct": 0.01},
+        "rsi": {"window_days": 14, "ma_window_days": 14},
+        "cmf": {"window_days": 20, "threshold": 0.05},
     },
     "data": {
-        "history_period": "200d",
+        "history_period": "400d",
         "bar_interval": "1h",
         "rth_start": "09:30",
         "rth_end": "16:00",
@@ -93,3 +93,27 @@ def load_valid_intervals() -> list[int]:
 
 def load_valid_priority_intervals() -> list[int]:
     return _load().get("scheduler", {}).get("valid_priority_intervals", [15, 30, 60])
+
+
+def days_to_bars(days: int) -> int:
+    """Convert a window in trading days to bar count for the configured resample interval."""
+    cfg = _load()
+    dcfg = cfg.get("data", {})
+    resample = dcfg.get("resample", "2h")
+    rth_start = dcfg.get("rth_start", "09:30")
+    rth_end = dcfg.get("rth_end", "16:00")
+
+    def _hours(t: str) -> float:
+        h, m = t.split(":")
+        return int(h) + int(m) / 60
+
+    rth_hours = _hours(rth_end) - _hours(rth_start)  # 6.5 for standard US RTH
+
+    if resample.endswith("d"):
+        bars_per_day = 1.0
+    elif resample.endswith("h"):
+        bars_per_day = rth_hours / float(resample[:-1])
+    else:
+        bars_per_day = rth_hours / 2.0  # safe fallback
+
+    return max(2, round(days * bars_per_day))

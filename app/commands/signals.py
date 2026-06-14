@@ -1,14 +1,11 @@
 import asyncio
 import logging
-from datetime import datetime
-import pytz
 
 from app.commands.registry import command
 from app.config import load_watchlist
 from app.indicators import analyze_tickers
 from app.telegram import send, build_batch_report, build_priority_alert, now_sgt
 
-EST = pytz.timezone("America/New_York")
 log = logging.getLogger(__name__)
 
 

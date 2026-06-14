@@ -10,10 +10,10 @@ class RSIWithMA(BaseIndicator):
     label = "RSI"
 
     def compute(self, df: pd.DataFrame) -> SignalResult:
-        from app.config import load_config
+        from app.config import load_config, days_to_bars
         rcfg = load_config().get("indicators", {}).get("rsi", {})
-        window = rcfg.get("window", 14)
-        ma_window = rcfg.get("ma_window", 14)
+        window = days_to_bars(rcfg.get("window_days", 14))
+        ma_window = days_to_bars(rcfg.get("ma_window_days", 14))
         close = df["Close"].squeeze()
         rsi = RSIIndicator(close=close, window=window, fillna=False).rsi()
         rsi_ma = rsi.rolling(ma_window).mean()

@@ -23,11 +23,18 @@ def _tz() -> pytz.BaseTzInfo:
     return pytz.timezone(_scfg().get("exchange_timezone", "America/New_York"))
 
 
+def _is_daily() -> bool:
+    from app.config import load_config
+    return load_config().get("data", {}).get("resample", "2h").endswith("d")
+
+
 def _batch_trigger(interval_hours: int) -> CronTrigger:
     cfg = _scfg()
-    open_h = cfg.get("rth_open_hour", 10)
     close_h = cfg.get("rth_close_hour", 16)
     offset = cfg.get("minute_offset", 5)
+    if _is_daily():
+        return CronTrigger(day_of_week="mon-fri", hour=close_h, minute=offset, timezone=_tz())
+    open_h = cfg.get("rth_open_hour", 10)
     hours = ",".join(str(h) for h in range(open_h, close_h + 1, interval_hours))
     return CronTrigger(day_of_week="mon-fri", hour=hours, minute=offset, timezone=_tz())
 
@@ -50,18 +57,6 @@ def collect_results() -> tuple[list[IndicatorResult], list[IndicatorResult]]:
     return analyze_tickers(load_watchlist())
 
 
-async def dispatch_results(
-    results: list[IndicatorResult],
-    priority_alerts: list[IndicatorResult],
-    chat_id: str | None = None,
-) -> None:
-    timestamp = now_sgt()
-    for alert in priority_alerts:
-        await send(build_priority_alert(alert))
-    if results:
-        await send(build_batch_report(results, timestamp), chat_id=chat_id)
-
-
 def _run(loop_fn):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -80,9 +75,8 @@ def run_analysis() -> None:
     log.info("market_analysis complete: %d tickers", len(results))
 
     async def _send():
-        timestamp = datetime.now(_tz()).strftime("%Y-%m-%d %H:%M %Z")
         if results:
-            await send(build_batch_report(results, timestamp))
+            await send(build_batch_report(results, now_sgt()))
 
     _run(_send)
 

@@ -10,9 +10,9 @@ class CMF(BaseIndicator):
     label = "CMF"
 
     def compute(self, df: pd.DataFrame) -> SignalResult:
-        from app.config import load_config
+        from app.config import load_config, days_to_bars
         ccfg = load_config().get("indicators", {}).get("cmf", {})
-        window = ccfg.get("window", 20)
+        window = days_to_bars(ccfg.get("window_days", 20))
         threshold = ccfg.get("threshold", 0.05)
         close = df["Close"].squeeze()
         high = df["High"].squeeze()

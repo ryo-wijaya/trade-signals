@@ -10,9 +10,9 @@ class BollingerBandsIndicator(BaseIndicator):
     label = "Bollinger"
 
     def compute(self, df: pd.DataFrame) -> SignalResult:
-        from app.config import load_config
+        from app.config import load_config, days_to_bars
         bcfg = load_config().get("indicators", {}).get("bollinger", {})
-        window = bcfg.get("window", 20)
+        window = days_to_bars(bcfg.get("window_days", 20))
         std_dev = bcfg.get("std_dev", 2)
         buffer = bcfg.get("buffer_pct", 0.01)
 

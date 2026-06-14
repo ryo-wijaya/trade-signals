@@ -1,9 +1,12 @@
 import html
+import logging
 import os
 from datetime import datetime
 import httpx
 import pytz
 from app.indicators.engine import IndicatorResult
+
+log = logging.getLogger(__name__)
 
 _RULE_LABELS = {
     "price_structure": "Structure",
@@ -29,10 +32,12 @@ async def send(text: str, chat_id: str | None = None) -> None:
         print("[telegram] missing credentials – message not sent")
         return
     async with httpx.AsyncClient() as client:
-        await client.post(
+        resp = await client.post(
             _api("sendMessage"),
             json={"chat_id": target, "text": text, "parse_mode": "HTML"},
         )
+        if resp.status_code != 200:
+            log.error("telegram send failed %d: %s", resp.status_code, resp.text)
 
 
 def _sig(signal: int) -> str:

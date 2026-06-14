@@ -10,10 +10,10 @@ class EMA200(BaseIndicator):
     label = "200 EMA"
 
     def compute(self, df: pd.DataFrame) -> SignalResult:
-        from app.config import load_config
-        window = load_config().get("indicators", {}).get("ema", {}).get("window", 200)
+        from app.config import load_config, days_to_bars
+        window_days = load_config().get("indicators", {}).get("ema", {}).get("window_days", 200)
         close = df["Close"].squeeze()
-        ema = EMAIndicator(close=close, window=window, fillna=False).ema_indicator()
+        ema = EMAIndicator(close=close, window=days_to_bars(window_days), fillna=False).ema_indicator()
         price = float(close.iloc[-1])
         ema_val = float(ema.iloc[-1])
         signal = 1 if price > ema_val else -1

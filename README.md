@@ -9,12 +9,13 @@
 
 ## How it works
 
-Two background jobs run Mon-Fri:
+Three background jobs run automatically:
 
-- **Batch report** — sends a full summary for every ticker once daily after market close (4:05pm ET by default).
-- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 3 of 5 indicators agree on direction and the price structure rule confirms the move.
+- **Batch report** — sends a full summary with LLM summaries for every ticker once daily after market close (4:05pm ET by default). Mon–Fri only.
+- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 3 of 5 indicators agree on direction and the price structure rule confirms the move. Mon–Fri only.
+- **Earnings calendar** — sends next earnings dates for all watchlist tickers every Saturday midnight SGT.
 
-Both intervals are configurable at runtime without restarting.
+Batch report and priority alert intervals are configurable at runtime without restarting.
 
 | Indicator | Buy | Sell | Neutral |
 |---|---|---|---|
@@ -69,7 +70,7 @@ uvicorn main:app           # production
 
 ## Deploy to Fly.io
 
-I use Fly.io to deploy my app for free, so the fly.toml file and fly-deploy workflow will exist. But feel free to use anything.
+I use Fly.io to deploy this app. Feel free to use any other hosting provider.
 
 **1. Install flyctl and log in**
 
@@ -123,7 +124,7 @@ fly ssh console   # shell into the running container
 | `/signalsplus` | Signals + live LLM market summary for every watchlist ticker |
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
-| `/portfolioanalysis` | AI analysis of portfolio risk, sector exposure, and rebalancing suggestions |
+| `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks |
 | `/earnings` | Next earnings report dates for watchlist tickers (SGT) — also sent every Saturday midnight SGT |
 | `/watchlist` | View current watchlist |
 | `/add AAPL TSLA` | Add tickers |
@@ -196,7 +197,7 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "minute_offset": 5,
     "valid_batch_intervals": [1, 2, 4],
     "valid_priority_intervals": [15, 30, 60],
-    "priority_min_signals": 4
+    "priority_min_signals": 3
   },
 
   "display": {
@@ -208,7 +209,9 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
 
   "llm": {
     "model": "perplexity/sonar-pro",
-    "max_tokens": 250
+    "max_tokens": 100,
+    "detailed_max_tokens": 250,
+    "portfolio_max_tokens": 1000
   }
 }
 ```

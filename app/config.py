@@ -1,7 +1,19 @@
 import json
+import os
+import shutil
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent.parent / "config.json"
+_CONFIG_DIR = os.getenv("CONFIG_DIR")
+if _CONFIG_DIR:
+    CONFIG_PATH = Path(_CONFIG_DIR) / "config.json"
+    # On first deploy the volume is empty — seed from the bundled config.
+    if not CONFIG_PATH.exists():
+        _bundled = Path(__file__).parent.parent / "config.json"
+        if _bundled.exists():
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(_bundled, CONFIG_PATH)
+else:
+    CONFIG_PATH = Path(__file__).parent.parent / "config.json"
 
 _DEFAULTS = {
     "watchlist": [],

@@ -1,6 +1,11 @@
 # trade-signals
 
-FastAPI app that runs technical analysis on a stock watchlist and sends reports to Telegram. Indicators use the [`ta`](https://github.com/bukosabino/ta) library on daily bars from Yahoo Finance.
+## Requirements
+
+- Python 3.12+
+- Telegram bot token (free via @BotFather)
+- Uses Yahoo Finance
+- Technical analysis [`ta`](https://github.com/bukosabino/ta) library on daily bars
 
 ## How it works
 
@@ -26,7 +31,7 @@ Signals use completed daily bars. If you request signals mid-day (while the US m
 **1. Clone and create a virtual environment**
 
 ```bash
-git clone https://github.com/your-username/trade-signals.git
+clone the project
 cd trade-signals
 python -m venv env
 source env/bin/activate
@@ -37,7 +42,7 @@ pip install -r requirements.txt
 
 - Message `@BotFather` on Telegram, send `/newbot`, follow the prompts to get a bot token
 - Start a conversation with your bot, then open: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
-- Send any message to the bot, refresh that URL, find `"chat":{"id": ...}` — that number is your chat ID
+- Send any message to the bot, refresh that URL, find `"chat":{"id": ...}` - that number is your chat ID
 
 **3. Configure environment variables**
 
@@ -107,18 +112,10 @@ curl -H "X-API-Key: your_secret" https://your-app-url/api/config/watchlist
 
 Interactive docs at `http://localhost:8000/docs`.
 
-## Security
-
-Two env vars protect the app when deployed:
-
-- **`TELEGRAM_ALLOWED_CHAT_IDS`** — comma-separated list of Telegram chat IDs that can run bot commands. Anyone outside the list is silently rejected. Set this to your own chat ID so strangers who find your bot can't touch it.
-- **`TRADE_SIGNALS_API_KEY`** — secret key required in the `X-API-Key` header for all REST API calls. Without it, anyone with your Cloud Run URL can modify your watchlist. If this env var is not set, the API is open (useful in local dev).
-
-On **Cloud Run**, set `--min-instances=1` — the scheduler and Telegram polling loop must stay running continuously. Without this, Cloud Run scales to zero on idle and no scheduled reports fire.
 
 ## Configuration reference
 
-All settings live in `config.json`. Watchlist and interval changes take effect immediately. Indicator parameters and scheduler settings require a restart.
+All settings live in `config.json`. Watchlist and interval changes take effect immediately. Indicator parameters and scheduler settings require a restart. Change as you see fit. Most are staticly configured, but some can be modified via telegram commands, e.g. intervals. Example config:
 
 ```json
 {
@@ -168,128 +165,23 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
 }
 ```
 
-`window_days` values are trading-day counts and automatically convert to the correct bar count based on `resample`. At `"1d"`, 200 days = 200 bars exactly.
 
-The `explanations` array is what `/explain` sends to Telegram. Each entry has a `"name"` and a `"text"` field. Add, remove, or edit entries freely — the command reads this at runtime, no restart needed.
+## Adding a new indicator
 
-`llm.model` can be any model slug from [openrouter.ai/models](https://openrouter.ai/models). Models with `online` in the name perform live web searches. `llm.max_tokens` controls the maximum summary length.
-
-## Project structure
-
-```
-app/
-  indicators/       # one file per indicator
-    base.py         # BaseIndicator interface
-    engine.py       # data fetching and registry
-    ema50.py
-    ema.py
-    bollinger.py
-    rsi.py
-    stochastic.py
-  rules/            # one file per rule
-    base.py         # BaseRule interface
-    registry.py     # register(), apply_rules()
-    price_structure.py
-  commands/         # one file per command group
-    registry.py     # @command decorator
-    signals.py
-    signals_plus.py # /signalsplus with LLM summaries
-    explain.py      # /explain indicator guide
-    watchlist.py
-    settings.py
-    admin.py
-  auth.py           # REST API key validation
-  bot.py            # Telegram polling loop
-  llm.py            # OpenRouter client
-  scheduler.py      # background jobs
-  telegram.py       # message formatting
-  config.py         # config.json read/write
-  market_calendar.py
-config.json         # all runtime config
-```
-
-## Adding an indicator
-
-1. Create `app/indicators/your_indicator.py`:
-
-```python
-import pandas as pd
-from app.indicators.base import BaseIndicator, SignalResult
-from app.indicators.engine import register
-
-class MyIndicator(BaseIndicator):
-    name = "MY"
-    label = "My Indicator"
-
-    def compute(self, df: pd.DataFrame) -> SignalResult:
-        # df columns: Open, High, Low, Close, Volume (daily bars)
-        value = ...
-        signal = 1 if value > threshold else -1 if value < threshold else 0
-        return SignalResult(signal=signal, display=f"{value:.2f}")
-
-register(MyIndicator())
-```
-
-2. Add one import to `app/indicators/__init__.py`:
-
-```python
-from app.indicators import ema50, ema, bollinger, rsi, stochastic, your_indicator  # noqa: F401
-```
-
-The indicator appears in all reports automatically. Order in the import list controls order in the message.
+1. Create in `app/indicators/your_indicator.py`
+2. Add one import to `app/indicators/__init__.py`
 
 ## Adding a rule
 
 Rules run after indicators compute. All rules must pass for a priority alert to fire. Rule status is shown in every report.
 
-1. Create `app/rules/your_rule.py`:
-
-```python
-import pandas as pd
-from app.rules.base import BaseRule, RuleResult
-from app.rules.registry import register
-
-class MyRule(BaseRule):
-    name = "my_rule"
-
-    def check(self, df: pd.DataFrame, result) -> RuleResult:
-        # result.score: total signal score (positive = bullish, negative = bearish)
-        # result.price: current close
-        # result.prev_close: previous bar close
-        # df: full OHLCV dataframe (daily bars)
-        if some_condition:
-            return RuleResult(passed=False, reason="explanation shown in report")
-        return RuleResult(passed=True, reason="")
-
-register(MyRule())
-```
-
-2. Add one import to `app/rules/__init__.py`:
-
-```python
-from app.rules import price_structure, your_rule  # noqa: F401
-```
+1. Create `app/rules/your_rule.py`
+2. Add one import to `app/rules/__init__.py`
 
 ## Adding a bot command
 
-```python
-from app.commands.registry import command
-from app.telegram import send
-
-@command("mycommand", description="short description for /help")
-async def handle_mycommand(args: list[str], chat_id: str) -> None:
-    await send("Hello.", chat_id=chat_id)
-```
-
-If you create a new file, import it in `app/commands/__init__.py`.
-
-## LLM market summaries
-
-`/signalsplus` runs the same indicator analysis as `/signals`, then calls OpenRouter for each ticker concurrently to fetch a 2–3 sentence recommendation that combines the technical signals with live news and market sentiment.
-
-The default model is `perplexity/sonar-pro`, which searches the web as part of its response. You can switch to any model on OpenRouter by changing `llm.model` in `config.json`. If `OPENROUTER_API_KEY` is not set, `/signalsplus` falls back to showing indicators only (no error).
-
-`/signals` is never affected — it never calls the LLM.
+1. Create `app/commands/your_command.py`
+2. Import in `app/commands/__init__.py`
 
 ## Indicator reference
 
@@ -320,9 +212,3 @@ Measures where today's close sits within the high-low range of the last 14 days.
 Priority alerts require a two-bar price structure. For a buy: the current bar must close above the previous close AND its low must be above the previous bar's low. For a sell: close below the previous close AND high below the previous bar's high.
 
 This rules out dead-cat bounces (higher close but lower low) and short-squeeze fades (lower close but higher high).
-
-## Requirements
-
-- Python 3.12+
-- Telegram bot token (free via @BotFather)
-- No paid data feeds — uses Yahoo Finance

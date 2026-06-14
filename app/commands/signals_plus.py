@@ -21,7 +21,7 @@ async def handle_signals_plus(args: list[str], chat_id: str) -> None:
 
     summaries: dict[str, str] = {}
     if results:
-        settled = await asyncio.gather(*[get_summary(r) for r in results], return_exceptions=True)
+        settled = await asyncio.gather(*[get_summary(r, detailed=True) for r in results], return_exceptions=True)
         for r, outcome in zip(results, settled):
             if isinstance(outcome, str) and outcome:
                 summaries[r.ticker] = outcome

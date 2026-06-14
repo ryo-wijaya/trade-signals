@@ -71,12 +71,20 @@ def run_analysis() -> None:
         log.info("market_analysis skipped: non-trading day")
         return
     log.info("market_analysis started")
-    results, _ = collect_results()
-    log.info("market_analysis complete: %d tickers", len(results))
 
     async def _send():
-        if results:
-            await send(build_batch_report(results, now_sgt()))
+        from app.llm import get_summary
+        loop = asyncio.get_running_loop()
+        results, _ = await loop.run_in_executor(None, lambda: analyze_tickers(load_watchlist()))
+        log.info("market_analysis complete: %d tickers", len(results))
+        if not results:
+            return
+        summaries = {}
+        settled = await asyncio.gather(*[get_summary(r) for r in results], return_exceptions=True)
+        for r, outcome in zip(results, settled):
+            if isinstance(outcome, str) and outcome:
+                summaries[r.ticker] = outcome
+        await send(build_batch_report(results, now_sgt(), summaries=summaries))
 
     _run(_send)
 

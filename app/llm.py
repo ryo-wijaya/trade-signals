@@ -20,7 +20,7 @@ def _indicator_text(r: IndicatorResult) -> str:
     return "\n".join(lines)
 
 
-async def get_summary(r: IndicatorResult) -> str:
+async def get_summary(r: IndicatorResult, detailed: bool = False) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         log.debug("OPENROUTER_API_KEY not set — skipping LLM summary for %s", r.ticker)
@@ -30,18 +30,28 @@ async def get_summary(r: IndicatorResult) -> str:
     from app.telegram import _call
     cfg = load_config().get("llm", {})
     model = cfg.get("model", "perplexity/sonar-pro")
-    max_tokens = cfg.get("max_tokens", 200)
+    max_tokens = cfg.get("detailed_max_tokens", 250) if detailed else cfg.get("max_tokens", 100)
 
-    log.info("llm summary requested for %s model=%s", r.ticker, model)
+    log.info("llm summary requested for %s model=%s detailed=%s", r.ticker, model, detailed)
 
     call = _call(r.score, len(r.signals))
-    prompt = (
-        f"Stock: {r.ticker} at ${r.price:.2f}. Technical signal: {call}.\n"
-        f"Indicators:\n{_indicator_text(r)}\n\n"
-        f"In 1 sentence, give a direct buy/hold/sell decision based on these indicators. "
-        f"In 1 sentence, note any recent news that confirms or contradicts this. "
-        f"Plain text only — no markdown, no bold, no bullets, no citation numbers."
-    )
+    if detailed:
+        prompt = (
+            f"Stock: {r.ticker} at ${r.price:.2f}. Technical signal: {call}.\n"
+            f"Indicators:\n{_indicator_text(r)}\n\n"
+            f"Give a direct buy/hold/sell recommendation based primarily on these indicators (2 sentences). "
+            f"Then summarise the most relevant news, analyst sentiment, and macro factors from the past month "
+            f"that support or contradict this view (2-3 sentences). "
+            f"Plain text only — no markdown, no bold, no bullets, no citation numbers."
+        )
+    else:
+        prompt = (
+            f"Stock: {r.ticker} at ${r.price:.2f}. Technical signal: {call}.\n"
+            f"Indicators:\n{_indicator_text(r)}\n\n"
+            f"In 1 sentence, give a direct buy/hold/sell decision based on these indicators. "
+            f"In 1 sentence, note any recent news that confirms or contradicts this. "
+            f"Plain text only — no markdown, no bold, no bullets, no citation numbers."
+        )
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:

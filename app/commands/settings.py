@@ -23,12 +23,17 @@ async def handle_config(args: list[str], chat_id: str) -> None:
     close_fmt = f"{close_h % 12 or 12}:{offset:02d}{'am' if close_h < 12 else 'pm'} ET"
     log.info("config queried: watchlist=%s interval=%sh priority=%smin", tickers, interval, priority)
     body = "\n".join(f"  {t}" for t in tickers)
-    batch_desc = f"Once daily at {close_fmt}" if is_daily else f"Every {interval}h (Mon-Fri, {open_h}:{offset:02d}-{close_h}:{offset:02d} ET)"
+    open_fmt = f"{open_h % 12 or 12}:{offset:02d}{'am' if open_h < 12 else 'pm'} ET"
+    batch_desc = (
+        f"Once daily at {close_fmt} (with LLM summaries)"
+        if is_daily else
+        f"Every {interval}h, Mon-Fri {open_fmt}–{close_fmt} (with LLM summaries)"
+    )
     await send(
         f"<b>Config</b>\n\n"
         f"<b>Watchlist ({len(tickers)} tickers)</b>\n{body}\n\n"
         f"<b>Batch Report</b>\n  {batch_desc}\n\n"
-        f"<b>Priority Check</b>\n  Every {priority}min (Mon-Fri, 10:05-16:05 ET)",
+        f"<b>Priority Check</b>\n  Every {priority}min, Mon-Fri {open_fmt}–{close_fmt}",
         chat_id=chat_id,
     )
 

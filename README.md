@@ -123,6 +123,7 @@ fly ssh console   # shell into the running container
 | `/signalsplus` | Signals + live LLM market summary for every watchlist ticker |
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
+| `/portfolioanalysis` | AI analysis of portfolio risk, sector exposure, and rebalancing suggestions |
 | `/watchlist` | View current watchlist |
 | `/add AAPL TSLA` | Add tickers |
 | `/remove AAPL` | Remove a ticker |

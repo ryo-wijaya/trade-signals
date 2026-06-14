@@ -18,7 +18,7 @@ class CMF(BaseIndicator):
             high=high, low=low, close=close, volume=volume, window=20, fillna=False
         ).chaikin_money_flow()
         c = float(cmf.iloc[-1])
-        signal = 1 if c > 0 else -1 if c < 0 else 0
+        signal = 1 if c > 0.05 else -1 if c < -0.05 else 0
         display = f"+{c:.3f}" if c >= 0 else f"{c:.3f}"
         return SignalResult(signal=signal, display=display)
 

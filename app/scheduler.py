@@ -89,6 +89,20 @@ def run_analysis() -> None:
     _run(_send)
 
 
+def run_earnings_report() -> None:
+    log.info("earnings_report started")
+
+    async def _send():
+        from app.commands.earnings import build_earnings_message
+        tickers = load_watchlist()
+        if not tickers:
+            return
+        msg = await build_earnings_message(tickers)
+        await send(msg)
+
+    _run(_send)
+
+
 def run_priority_check() -> None:
     if not is_trading_day(datetime.now(_tz()).date()):
         log.info("priority_check skipped: non-trading day")
@@ -122,4 +136,9 @@ def create_scheduler() -> BackgroundScheduler:
     _scheduler = BackgroundScheduler(timezone=_tz())
     _scheduler.add_job(run_analysis, _batch_trigger(load_interval()), id="market_analysis")
     _scheduler.add_job(run_priority_check, _priority_trigger(load_priority_interval()), id="priority_check")
+    _scheduler.add_job(
+        run_earnings_report,
+        CronTrigger(day_of_week="sat", hour=0, minute=0, timezone=pytz.timezone("Asia/Singapore")),
+        id="earnings_report",
+    )
     return _scheduler

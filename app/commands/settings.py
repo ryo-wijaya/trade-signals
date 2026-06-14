@@ -21,19 +21,28 @@ async def handle_config(args: list[str], chat_id: str) -> None:
     open_h = scfg.get("rth_open_hour", 10)
     offset = scfg.get("minute_offset", 5)
     close_fmt = f"{close_h % 12 or 12}:{offset:02d}{'am' if close_h < 12 else 'pm'} ET"
+    open_fmt = f"{open_h % 12 or 12}:{offset:02d}{'am' if open_h < 12 else 'pm'} ET"
+    valid_intervals = "  ".join(f"/interval {v}" for v in load_valid_intervals())
+    valid_priorities = "  ".join(f"/priority {v}" for v in load_valid_priority_intervals())
+
+    if is_daily:
+        batch_schedule = f"Every {interval}h · fires once at {close_fmt} Mon–Fri  (daily bars)"
+    else:
+        batch_schedule = f"Every {interval}h · Mon–Fri {open_fmt}–{close_fmt}"
+
     log.info("config queried: watchlist=%s interval=%sh priority=%smin", tickers, interval, priority)
     body = "\n".join(f"  {t}" for t in tickers)
-    open_fmt = f"{open_h % 12 or 12}:{offset:02d}{'am' if open_h < 12 else 'pm'} ET"
-    batch_desc = (
-        f"Once daily at {close_fmt} (with LLM summaries)"
-        if is_daily else
-        f"Every {interval}h, Mon-Fri {open_fmt}–{close_fmt} (with LLM summaries)"
-    )
     await send(
         f"<b>Config</b>\n\n"
         f"<b>Watchlist ({len(tickers)} tickers)</b>\n{body}\n\n"
-        f"<b>Batch Report</b>\n  {batch_desc}\n\n"
-        f"<b>Priority Check</b>\n  Every {priority}min, Mon-Fri {open_fmt}–{close_fmt}",
+        f"<b>Batch Report</b>  (with LLM summaries)\n"
+        f"  {batch_schedule}\n"
+        f"  Change: {valid_intervals}\n\n"
+        f"<b>Priority Alert</b>\n"
+        f"  Every {priority}min · Mon–Fri {open_fmt}–{close_fmt}\n"
+        f"  Change: {valid_priorities}\n\n"
+        f"<b>Earnings</b>\n"
+        f"  Weekly · Saturday midnight SGT",
         chat_id=chat_id,
     )
 

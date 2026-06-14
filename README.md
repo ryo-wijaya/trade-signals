@@ -124,13 +124,13 @@ fly ssh console   # shell into the running container
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
 | `/portfolioanalysis` | AI analysis of portfolio risk, sector exposure, and rebalancing suggestions |
+| `/earnings` | Next earnings report dates for watchlist tickers (SGT) — also sent every Saturday midnight SGT |
 | `/watchlist` | View current watchlist |
 | `/add AAPL TSLA` | Add tickers |
 | `/remove AAPL` | Remove a ticker |
 | `/interval` | View or change batch report frequency |
 | `/priority` | View or change priority alert frequency |
 | `/config` | Show all current settings |
-| `/run` | Manually trigger a broadcast |
 | `/help` | Show all commands |
 
 Plain symbols default to US listings. For other exchanges use Yahoo Finance's suffix (e.g. `9988.HK`, `VOD.L`, `BMW.DE`).

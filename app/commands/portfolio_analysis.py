@@ -34,40 +34,22 @@ def _split_message(text: str, limit: int = 4000) -> list[str]:
 def _build_prompt(results: list[IndicatorResult]) -> str:
     lines = []
     for r in results:
-        buys     = sum(1 for _, _, s in r.signals if s.signal == 1)
-        sells    = sum(1 for _, _, s in r.signals if s.signal == -1)
-        neutrals = sum(1 for _, _, s in r.signals if s.signal == 0)
-        lines.append(f"{r.ticker}  ${r.price:.2f}  {_call(r.score, len(r.signals))}  (Buy:{buys} Sell:{sells} Neutral:{neutrals})")
-        for _, label, sig in r.signals:
-            lines.append(f"  {label}: {sig.display}")
-        lines.append("")
-
-    bullish = sum(1 for r in results if r.score > 0)
-    bearish = sum(1 for r in results if r.score < 0)
-    neutral_count = sum(1 for r in results if r.score == 0)
+        call = _call(r.score, len(r.signals))
+        sigs = ", ".join(f"{label}: {sig.display}" for _, label, sig in r.signals)
+        lines.append(f"{r.ticker} ${r.price:.2f} {call}: {sigs}")
 
     return (
-        f"I hold {len(results)} stock positions with equal weighting:\n\n"
-        f"{''.join(lines)}"
-        f"Portfolio summary: {bullish} bullish, {bearish} bearish, {neutral_count} neutral.\n\n"
-        f"You are a portfolio analyst with access to live market data. Provide a structured analysis:\n\n"
-        f"1. Sector and concentration risk: what industries/themes dominate this portfolio, "
-        f"and what are the risks if that sector underperforms?\n\n"
-        f"2. Correlation risk: are these stocks likely to move together in a downturn? "
-        f"How diversified is this portfolio really?\n\n"
-        f"3. Technical posture: given the signals above, is the portfolio overall in a strong or weak position "
-        f"right now? Which positions are the most and least technically sound?\n\n"
-        f"4. Specific actions for each ticker: increase, hold, or reduce — with a one-line reason "
-        f"based on both the technical signals and current market news.\n\n"
-        f"5. What is missing: name 1-2 specific sectors, ETFs, or asset types I should consider adding "
-        f"to reduce concentration risk, with brief reasoning.\n\n"
-        f"Draw on current market conditions, recent news, and analyst sentiment where relevant. "
-        f"Be direct and specific — no vague generalities. "
-        f"Plain text only — no markdown, no bold symbols, no bullet points starting with *, no citation numbers."
+        "My stock positions (equal weight):\n"
+        + "\n".join(lines) + "\n\n"
+        + "Plain text only — no markdown, no bold, no bullets, no citation numbers.\n"
+        + "Start with 'Actions:' — one line per ticker: TICKER: increase / hold / reduce — one-line reason (use current market data).\n"
+        + "Then 'Add:' — 1-2 specific tickers or ETFs to buy for diversification, one-line reason each.\n"
+        + "Then 'Risk:' — one sentence on the single biggest risk to this portfolio right now.\n"
+        + "No preamble. No summary. Just those three sections."
     )
 
 
-@command("portfolioanalysis", description="AI analysis of your portfolio risk, exposure, and rebalancing suggestions")
+@command("portfolioanalysis", description="AI analysis of portfolio actions, what to add, and key risks")
 async def handle_portfolio_analysis(args: list[str], chat_id: str) -> None:
     api_key = os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
@@ -90,7 +72,7 @@ async def handle_portfolio_analysis(args: list[str], chat_id: str) -> None:
 
     cfg = load_config().get("llm", {})
     model = cfg.get("model", "perplexity/sonar-pro")
-    max_tokens = cfg.get("portfolio_max_tokens", 600)
+    max_tokens = cfg.get("portfolio_max_tokens", 1000)
     prompt = _build_prompt(results)
 
     log.info("portfolio analysis requested for %s model=%s", [r.ticker for r in results], model)
@@ -120,7 +102,6 @@ async def handle_portfolio_analysis(args: list[str], chat_id: str) -> None:
             header = f"<b>Portfolio Analysis</b>  {now_sgt()}\n<code>{tickers_str}</code>\n\n"
             body = html.escape(analysis)
 
-            # Split into chunks ≤4000 chars at paragraph boundaries
             chunks = _split_message(header + body, limit=4000)
             for chunk in chunks:
                 await send(chunk, chat_id=chat_id)

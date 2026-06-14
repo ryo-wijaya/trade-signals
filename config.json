@@ -1,0 +1,10 @@
+{
+  "watchlist": [
+    "AMZN",
+    "BABA",
+    "MSFT",
+    "NVDA"
+  ],
+  "interval_hours": 2,
+  "priority_interval_minutes": 30
+}

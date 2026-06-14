@@ -61,9 +61,13 @@ def build_batch_report(results: list[IndicatorResult], timestamp: str, title: st
 
 def build_priority_alert(r: IndicatorResult) -> str:
     call = "Strong Buy" if r.score > 0 else "Strong Sell"
+    if r.score > 0:
+        confirmation = f"Close above prev close (${r.prev_close:.2f}), higher low confirmed"
+    else:
+        confirmation = f"Close below prev close (${r.prev_close:.2f}), lower high confirmed"
     return "\n".join([
         f"ALERT: <b>{r.ticker}  {call}</b>",
-        f"${r.price:.2f}",
+        f"${r.price:.2f}  {confirmation}",
         "",
         _indicator_block(r.signals),
     ])

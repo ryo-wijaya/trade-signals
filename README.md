@@ -6,8 +6,8 @@ FastAPI app that runs technical analysis on a stock watchlist during market hour
 
 Two background jobs run Mon-Fri during US market hours:
 
-- **Batch report** - sends a summary for every ticker. Default every 2 hours, configurable to 1, 2, or 4 hours.
-- **Priority check** - runs silently every 30 minutes. Only sends an alert when all four indicators agree on direction AND price structure confirms the move (close above prev close and bar low above prev low for buy; close below prev close and bar high below prev high for sell). Configurable to 15, 30, or 60 minutes.
+- **Batch report** - sends a full summary for every ticker. Default every 2 hours, configurable to 1, 2, or 4 hours.
+- **Priority alert** - runs silently on a shorter interval. Fires only when all indicators agree on direction and the price structure rule confirms the move. Configurable to 15, 30, or 60 minutes.
 
 Both can be changed at runtime without restarting.
 
@@ -16,7 +16,7 @@ Indicators run on 2-hour RTH bars:
 | Indicator | Buy | Sell |
 |---|---|---|
 | 200 EMA | Price above EMA | Price below EMA |
-| Bollinger Bands (20, 2o) | Price near lower band | Price near upper band |
+| Bollinger Bands (20, 2) | Price near lower band | Price near upper band |
 | RSI(14) + RSI MA(14) | RSI above its MA | RSI below its MA |
 | CMF(20) | CMF above +0.05 | CMF below -0.05 |
 
@@ -71,7 +71,7 @@ uvicorn main:app           # production
 | `/remove AAPL` | Remove a ticker |
 | `/interval` | View or change batch report frequency |
 | `/interval 1` | Set to 1, 2, or 4 hours |
-| `/priority` | View or change priority check frequency |
+| `/priority` | View or change priority alert frequency |
 | `/priority 15` | Set to 15, 30, or 60 minutes |
 | `/config` | Show all current settings |
 | `/run` | Manually trigger a broadcast |
@@ -122,7 +122,7 @@ app/
   rules/            # one file per rule
     base.py         # BaseRule interface
     registry.py     # register(), apply_rules()
-    price_structure.py  # price structure confirmation
+    price_structure.py
   commands/         # one file per command group
     registry.py     # @command decorator
     signals.py
@@ -134,7 +134,7 @@ app/
   telegram.py       # message formatting
   config.py         # config.json read/write
   market_calendar.py
-config.json         # runtime config
+config.json         # all runtime config
 ```
 
 ## Adding an indicator
@@ -169,7 +169,7 @@ The indicator appears in all reports automatically. The priority alert threshold
 
 ## Adding a rule
 
-Rules are checked after indicators compute. All rules must pass for a priority alert to fire. Rules do not affect the batch report.
+Rules run after indicators compute. All rules must pass for a priority alert to fire. Rule status is shown in every report.
 
 1. Create `app/rules/your_rule.py`:
 
@@ -182,12 +182,12 @@ class MyRule(BaseRule):
     name = "my_rule"
 
     def check(self, df: pd.DataFrame, result) -> RuleResult:
-        # result.score: current total signal score
+        # result.score: total signal score
         # result.price: current close
         # result.prev_close: previous bar close
         # df: full OHLCV dataframe (2h RTH bars)
         if some_condition:
-            return RuleResult(passed=False, reason="explanation for logs")
+            return RuleResult(passed=False, reason="explanation shown in report")
         return RuleResult(passed=True, reason="")
 
 register(MyRule())
@@ -214,6 +214,53 @@ async def handle_mycommand(args: list[str], chat_id: str) -> None:
 
 If you create a new file, import it in `app/commands/__init__.py`. It registers itself and appears in `/help`.
 
+## Configuration reference
+
+All settings live in `config.json`. Changes to watchlist and intervals take effect immediately. Indicator parameters and scheduler settings require a restart.
+
+```json
+{
+  "watchlist": ["AMZN", "MSFT"],
+  "interval_hours": 2,
+  "priority_interval_minutes": 30,
+
+  "indicators": {
+    "ema":       { "window": 200 },
+    "bollinger": { "window": 20, "std_dev": 2, "buffer_pct": 0.01 },
+    "rsi":       { "window": 14, "ma_window": 14 },
+    "cmf":       { "window": 20, "threshold": 0.05 }
+  },
+
+  "data": {
+    "history_period": "200d",
+    "bar_interval": "1h",
+    "rth_start": "09:30",
+    "rth_end": "16:00",
+    "resample": "2h",
+    "fetch_retries": 3,
+    "ticker_sleep_seconds": 0.5
+  },
+
+  "scheduler": {
+    "exchange_timezone": "America/New_York",
+    "rth_open_hour": 10,
+    "rth_close_hour": 16,
+    "minute_offset": 5,
+    "valid_batch_intervals": [1, 2, 4],
+    "valid_priority_intervals": [15, 30, 60]
+  },
+
+  "display": {
+    "timezone": "Asia/Singapore",
+    "timestamp_format": "%d %b %Y  %I:%M %p SGT"
+  },
+
+  "market": {
+    "calendar": "NYSE"
+  }
+}
+```
+
 ## Requirements
 
 - Python 3.12+
@@ -224,28 +271,26 @@ If you create a new file, import it in `app/commands/__init__.py`. It registers 
 
 ## Indicator reference
 
-Each indicator covers a different aspect of price. All four need to agree before a priority alert fires.
+All four indicators must agree before a priority alert fires.
 
 ### 200 EMA
 
-Tracks the long-term trend. Price above the 200 EMA means the stock is in an uptrend. Price below means it is in a downtrend. Most traders treat this as a filter and will not buy a stock that is below its 200 EMA.
+Tracks the long-term trend. Price above the 200 EMA means the stock is in an uptrend. Price below means a downtrend. Most traders treat this as a hard filter and will not buy a stock below its 200 EMA.
 
 ### Bollinger Bands
 
-Places upper and lower bands 2 standard deviations from a 20-period moving average. When price touches the lower band the stock is cheap relative to recent history and often bounces. When it touches the upper band the stock is extended and often pulls back. A 1% buffer is applied to each band to reduce noise.
-
-Note: touching the lower band marks a cheap price, not a reversal. The price structure rule must also confirm before any alert fires.
-
-### Price structure confirmation
-
-Priority alerts require a two-bar price structure before firing. For a buy alert, the current bar must close above the previous bar's close AND its low must be above the previous bar's low. For a sell alert, the current bar must close below the previous bar's close AND its high must be below the previous bar's high.
-
-The higher-low check is the more important of the two. A dead-cat bounce can produce a higher close but will still print a lower low as price whipsaws. Requiring both a higher close and a higher low filters those out. This is a gate on the alert, not a fifth indicator. Indicators can show Strong Buy while price is still falling, and no alert fires until both structural conditions are met.
+Places upper and lower bands 2 standard deviations from a 20-period moving average. Price near the lower band is cheap relative to recent history. Price near the upper band is extended. A 1% buffer is applied to each band to reduce noise.
 
 ### RSI + RSI MA
 
-RSI measures the speed of recent price moves on a scale of 0 to 100. Instead of fixed levels like 70/30, this app compares RSI to its own 14-period moving average. When RSI crosses above its MA, momentum is picking up. When it crosses below, momentum is fading. This reacts earlier than fixed thresholds.
+RSI measures the speed of recent price moves on a scale of 0 to 100. This app compares RSI to its own 14-period moving average rather than using fixed levels like 70/30. When RSI crosses above its MA, momentum is picking up. When it crosses below, momentum is fading. This reacts earlier than fixed thresholds.
 
 ### CMF
 
-Chaikin Money Flow measures whether volume is flowing into or out of a stock. It looks at where price closes within each bar's range and weights it by volume. A reading above +0.05 signals genuine buying pressure. A reading below -0.05 signals genuine selling pressure. The zone between -0.05 and +0.05 is treated as neutral. This threshold filters out marginal readings where CMF is barely positive or negative but has no real conviction behind it. A stock rising with negative CMF is a warning that the move may not last.
+Chaikin Money Flow measures whether volume is flowing into or out of a stock. A reading above +0.05 signals genuine buying pressure. A reading below -0.05 signals genuine selling pressure. The zone between is treated as neutral, filtering out low-conviction readings. A stock rising on negative CMF is a warning the move may not last.
+
+### Price structure confirmation
+
+Priority alerts require a two-bar price structure. For a buy: the current bar must close above the previous close AND its low must be above the previous bar's low. For a sell: close below the previous close AND high below the previous bar's high.
+
+The higher-low check matters most. A dead-cat bounce can produce a higher close while still making a lower low. Requiring both conditions filters those out. This is a gate on the alert, not an additional indicator.

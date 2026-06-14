@@ -24,6 +24,7 @@ class IndicatorResult:
     prev_close: float
     signals: list[tuple[str, str, SignalResult]]  # (name, label, result)
     rules_passed: bool = field(default=True)
+    rule_results: list[tuple[str, bool, str]] = field(default_factory=list)  # (name, passed, reason)
 
     @property
     def score(self) -> int:
@@ -31,16 +32,25 @@ class IndicatorResult:
 
 
 def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
-    for attempt in range(3):
+    from app.config import load_config
+    dcfg = load_config().get("data", {})
+    period = dcfg.get("history_period", "200d")
+    interval = dcfg.get("bar_interval", "1h")
+    rth_start = dcfg.get("rth_start", "09:30")
+    rth_end = dcfg.get("rth_end", "16:00")
+    resample = dcfg.get("resample", "2h")
+    retries = dcfg.get("fetch_retries", 3)
+
+    for attempt in range(retries):
         try:
             df = yf.Ticker(ticker).history(
-                period="200d", interval="1h", prepost=False, auto_adjust=True
+                period=period, interval=interval, prepost=False, auto_adjust=True
             )
         except Exception:
             df = pd.DataFrame()
         if not df.empty:
             break
-        if attempt < 2:
+        if attempt < retries - 1:
             time.sleep(2 ** attempt)
 
     if df.empty:
@@ -54,8 +64,8 @@ def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
         df.index = df.index.tz_localize("UTC")
     df.index = df.index.tz_convert("America/New_York")
 
-    rth = df.between_time("09:30", "16:00")
-    return rth.resample("2h", label="right", closed="right").agg(
+    rth = df.between_time(rth_start, rth_end)
+    return rth.resample(resample, label="right", closed="right").agg(
         {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
     ).dropna()
 
@@ -66,15 +76,17 @@ def analyze(ticker: str) -> IndicatorResult:
     prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else price
     signals = [(ind.name, ind.label, ind.compute(df)) for ind in _INDICATORS]
     result = IndicatorResult(ticker=ticker, price=price, prev_close=prev_close, signals=signals)
-    result.rules_passed, _ = apply_rules(df, result)
+    result.rules_passed, result.rule_results = apply_rules(df, result)
     return result
 
 
 def analyze_tickers(tickers: list[str]) -> tuple[list[IndicatorResult], list[IndicatorResult]]:
+    from app.config import load_config
+    sleep_secs = load_config().get("data", {}).get("ticker_sleep_seconds", 0.5)
     results, alerts = [], []
     for i, ticker in enumerate(tickers):
         if i > 0:
-            time.sleep(0.5)
+            time.sleep(sleep_secs)
         try:
             r = analyze(ticker)
             results.append(r)

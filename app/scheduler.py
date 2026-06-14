@@ -11,17 +11,39 @@ from app.indicators import analyze_tickers, IndicatorResult
 from app.market_calendar import is_trading_day
 from app.telegram import build_batch_report, build_priority_alert, send, now_sgt
 
-EST = pytz.timezone("America/New_York")
 _scheduler: BackgroundScheduler | None = None
 
+
+def _scfg() -> dict:
+    from app.config import load_config
+    return load_config().get("scheduler", {})
+
+
+def _tz() -> pytz.BaseTzInfo:
+    return pytz.timezone(_scfg().get("exchange_timezone", "America/New_York"))
+
+
 def _batch_trigger(interval_hours: int) -> CronTrigger:
-    hours = ",".join(str(h) for h in range(10, 17, interval_hours))
-    return CronTrigger(day_of_week="mon-fri", hour=hours, minute=5, timezone=EST)
+    cfg = _scfg()
+    open_h = cfg.get("rth_open_hour", 10)
+    close_h = cfg.get("rth_close_hour", 16)
+    offset = cfg.get("minute_offset", 5)
+    hours = ",".join(str(h) for h in range(open_h, close_h + 1, interval_hours))
+    return CronTrigger(day_of_week="mon-fri", hour=hours, minute=offset, timezone=_tz())
 
 
 def _priority_trigger(interval_minutes: int) -> CronTrigger:
-    minutes = ",".join(str((5 + i * interval_minutes) % 60) for i in range(60 // interval_minutes))
-    return CronTrigger(day_of_week="mon-fri", hour="10-16", minute=minutes, timezone=EST)
+    cfg = _scfg()
+    open_h = cfg.get("rth_open_hour", 10)
+    close_h = cfg.get("rth_close_hour", 16)
+    offset = cfg.get("minute_offset", 5)
+    minutes = ",".join(str((offset + i * interval_minutes) % 60) for i in range(60 // interval_minutes))
+    return CronTrigger(
+        day_of_week="mon-fri",
+        hour=f"{open_h}-{close_h}",
+        minute=minutes,
+        timezone=_tz(),
+    )
 
 
 def collect_results() -> tuple[list[IndicatorResult], list[IndicatorResult]]:
@@ -50,7 +72,7 @@ def _run(loop_fn):
 
 
 def run_analysis() -> None:
-    if not is_trading_day(datetime.now(EST).date()):
+    if not is_trading_day(datetime.now(_tz()).date()):
         log.info("market_analysis skipped: non-trading day")
         return
     log.info("market_analysis started")
@@ -58,7 +80,7 @@ def run_analysis() -> None:
     log.info("market_analysis complete: %d tickers", len(results))
 
     async def _send():
-        timestamp = datetime.now(EST).strftime("%Y-%m-%d %H:%M %Z")
+        timestamp = datetime.now(_tz()).strftime("%Y-%m-%d %H:%M %Z")
         if results:
             await send(build_batch_report(results, timestamp))
 
@@ -66,7 +88,7 @@ def run_analysis() -> None:
 
 
 def run_priority_check() -> None:
-    if not is_trading_day(datetime.now(EST).date()):
+    if not is_trading_day(datetime.now(_tz()).date()):
         log.info("priority_check skipped: non-trading day")
         return
     log.info("priority_check started")
@@ -95,7 +117,7 @@ def reschedule_priority(interval_minutes: int) -> None:
 
 def create_scheduler() -> BackgroundScheduler:
     global _scheduler
-    _scheduler = BackgroundScheduler(timezone=EST)
+    _scheduler = BackgroundScheduler(timezone=_tz())
     _scheduler.add_job(run_analysis, _batch_trigger(load_interval()), id="market_analysis")
     _scheduler.add_job(run_priority_check, _priority_trigger(load_priority_interval()), id="priority_check")
     return _scheduler

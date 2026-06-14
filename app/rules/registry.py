@@ -11,11 +11,13 @@ def register(rule: BaseRule) -> None:
     _RULES.append(rule)
 
 
-def apply_rules(df: pd.DataFrame, result) -> tuple[bool, list[str]]:
-    failures = []
+def apply_rules(df: pd.DataFrame, result) -> tuple[bool, list[tuple[str, bool, str]]]:
+    """Returns (all_passed, [(rule_name, passed, reason), ...])."""
+    rule_results = []
     for rule in _RULES:
         r = rule.check(df, result)
         if not r.passed:
             log.debug("rule %s blocked %s: %s", rule.name, result.ticker, r.reason)
-            failures.append(r.reason)
-    return len(failures) == 0, failures
+        rule_results.append((rule.name, r.passed, r.reason))
+    all_passed = all(passed for _, passed, _ in rule_results)
+    return all_passed, rule_results

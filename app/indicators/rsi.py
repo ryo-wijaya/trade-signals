@@ -10,13 +10,25 @@ class RSIWithMA(BaseIndicator):
     label = "RSI"
 
     def compute(self, df: pd.DataFrame) -> SignalResult:
+        from app.config import load_config
+        rcfg = load_config().get("indicators", {}).get("rsi", {})
+        window = rcfg.get("window", 14)
+        ma_window = rcfg.get("ma_window", 14)
         close = df["Close"].squeeze()
-        rsi = RSIIndicator(close=close, window=14, fillna=False).rsi()
-        rsi_ma = rsi.rolling(14).mean()
+        rsi = RSIIndicator(close=close, window=window, fillna=False).rsi()
+        rsi_ma = rsi.rolling(ma_window).mean()
         r = float(rsi.iloc[-1])
         rma = float(rsi_ma.iloc[-1])
-        signal = 1 if r > rma else -1 if r < rma else 0
-        return SignalResult(signal=signal, display=f"{r:.1f} · MA {rma:.1f}")
+        if r > rma:
+            signal = 1
+            display = f"rising  {r:.1f} above MA {rma:.1f}"
+        elif r < rma:
+            signal = -1
+            display = f"falling  {r:.1f} below MA {rma:.1f}"
+        else:
+            signal = 0
+            display = f"flat  {r:.1f} at MA {rma:.1f}"
+        return SignalResult(signal=signal, display=display)
 
 
 register(RSIWithMA())

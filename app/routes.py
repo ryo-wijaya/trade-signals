@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.config import load_watchlist, save_watchlist, load_interval, load_priority_interval, VALID_INTERVALS, VALID_PRIORITY_INTERVALS
+from app.config import (
+    load_watchlist, save_watchlist, load_interval, load_priority_interval,
+    load_valid_intervals, load_valid_priority_intervals,
+)
 
 router = APIRouter(prefix="/api/config")
 
@@ -42,8 +45,8 @@ def get_interval():
 def set_interval(body: dict):
     from app.scheduler import reschedule
     hours = body.get("interval_hours")
-    if hours not in VALID_INTERVALS:
-        raise HTTPException(status_code=400, detail=f"interval_hours must be one of {VALID_INTERVALS}")
+    if hours not in load_valid_intervals():
+        raise HTTPException(status_code=400, detail=f"interval_hours must be one of {load_valid_intervals()}")
     reschedule(hours)
     return {"interval_hours": hours}
 
@@ -57,7 +60,7 @@ def get_priority_interval():
 def set_priority_interval(body: dict):
     from app.scheduler import reschedule_priority
     minutes = body.get("priority_interval_minutes")
-    if minutes not in VALID_PRIORITY_INTERVALS:
-        raise HTTPException(status_code=400, detail=f"priority_interval_minutes must be one of {VALID_PRIORITY_INTERVALS}")
+    if minutes not in load_valid_priority_intervals():
+        raise HTTPException(status_code=400, detail=f"priority_interval_minutes must be one of {load_valid_priority_intervals()}")
     reschedule_priority(minutes)
     return {"priority_interval_minutes": minutes}

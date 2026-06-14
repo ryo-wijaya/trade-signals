@@ -2,7 +2,7 @@ import logging
 from app.commands.registry import command
 from app.config import (
     load_watchlist, load_interval, load_priority_interval,
-    VALID_INTERVALS, VALID_PRIORITY_INTERVALS,
+    load_valid_intervals, load_valid_priority_intervals,
 )
 from app.telegram import send
 
@@ -42,11 +42,11 @@ async def handle_interval(args: list[str], chat_id: str) -> None:
     try:
         hours = int(args[0])
     except ValueError:
-        await send(f"Usage: /interval 1  (valid: {VALID_INTERVALS})", chat_id=chat_id)
+        await send(f"Usage: /interval 1  (valid: {load_valid_intervals()})", chat_id=chat_id)
         return
 
-    if hours not in VALID_INTERVALS:
-        await send(f"Invalid interval. Choose from: {VALID_INTERVALS}", chat_id=chat_id)
+    if hours not in load_valid_intervals():
+        await send(f"Invalid interval. Choose from: {load_valid_intervals()}", chat_id=chat_id)
         return
 
     reschedule(hours)
@@ -71,11 +71,11 @@ async def handle_priority(args: list[str], chat_id: str) -> None:
     try:
         minutes = int(args[0])
     except ValueError:
-        await send(f"Usage: /priority 30  (valid: {VALID_PRIORITY_INTERVALS})", chat_id=chat_id)
+        await send(f"Usage: /priority 30  (valid: {load_valid_priority_intervals()})", chat_id=chat_id)
         return
 
-    if minutes not in VALID_PRIORITY_INTERVALS:
-        await send(f"Invalid interval. Choose from: {VALID_PRIORITY_INTERVALS}", chat_id=chat_id)
+    if minutes not in load_valid_priority_intervals():
+        await send(f"Invalid interval. Choose from: {load_valid_priority_intervals()}", chat_id=chat_id)
         return
 
     reschedule_priority(minutes)

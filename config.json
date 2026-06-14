@@ -3,6 +3,9 @@
   "interval_hours": 2,
   "priority_interval_minutes": 30,
   "indicators": {
+    "ema50": {
+      "window_days": 50
+    },
     "ema": {
       "window_days": 200
     },
@@ -15,9 +18,11 @@
       "window_days": 14,
       "ma_window_days": 14
     },
-    "cmf": {
-      "window_days": 20,
-      "threshold": 0.05
+    "stochastic": {
+      "window_days": 14,
+      "smooth_window": 3,
+      "oversold": 20,
+      "overbought": 80
     }
   },
   "data": {
@@ -35,7 +40,8 @@
     "rth_close_hour": 16,
     "minute_offset": 5,
     "valid_batch_intervals": [1, 2, 4],
-    "valid_priority_intervals": [15, 30, 60]
+    "valid_priority_intervals": [15, 30, 60],
+    "priority_min_signals": 4
   },
   "display": {
     "timezone": "Asia/Singapore",

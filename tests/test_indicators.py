@@ -2,10 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.indicators.ema50 import EMA50
 from app.indicators.ema import EMA200
 from app.indicators.bollinger import BollingerBandsIndicator
 from app.indicators.rsi import RSIWithMA
-from app.indicators.cmf import CMF
+from app.indicators.stochastic import Stochastic
 from app.indicators import analyze
 
 
@@ -21,7 +22,19 @@ def _make_ohlcv(closes: list[float], volume: int = 1_000_000) -> pd.DataFrame:
     })
 
 
-# --- EMA ---
+# --- EMA50 ---
+
+class TestEMA50:
+    def test_bullish_in_uptrend(self):
+        df = _make_ohlcv([100 + i * 0.5 for i in range(100)])
+        assert EMA50().compute(df).signal == 1
+
+    def test_bearish_in_downtrend(self):
+        df = _make_ohlcv([200 - i * 0.5 for i in range(100)])
+        assert EMA50().compute(df).signal == -1
+
+
+# --- EMA200 ---
 
 class TestEMA:
     def test_bullish_in_uptrend(self):
@@ -86,20 +99,33 @@ class TestRSI:
         )
 
 
-# --- CMF ---
+# --- Stochastic ---
 
-class TestCMF:
-    def test_positive_when_close_near_high(self):
-        n = 300
-        c = np.full(n, 100.0)
-        df = pd.DataFrame({"Open": c * 0.99, "High": c, "Low": c * 0.98, "Close": c, "Volume": np.full(n, 1_000_000)})
-        assert CMF().compute(df).signal == 1
+class TestStochastic:
+    def test_oversold_when_price_at_lows(self):
+        # Price sitting at the bottom of its range for 30 days → %K near 0 → oversold
+        n = 100
+        highs = np.full(n, 110.0)
+        lows = np.full(n, 90.0)
+        closes = np.full(n, 91.0)  # consistently near the low
+        df = pd.DataFrame({"Open": closes, "High": highs, "Low": lows, "Close": closes, "Volume": np.full(n, 1_000_000)})
+        assert Stochastic().compute(df).signal == 1
 
-    def test_negative_when_close_near_low(self):
-        n = 300
-        c = np.full(n, 100.0)
-        df = pd.DataFrame({"Open": c * 1.01, "High": c * 1.02, "Low": c, "Close": c, "Volume": np.full(n, 1_000_000)})
-        assert CMF().compute(df).signal == -1
+    def test_overbought_when_price_at_highs(self):
+        n = 100
+        highs = np.full(n, 110.0)
+        lows = np.full(n, 90.0)
+        closes = np.full(n, 109.0)  # consistently near the high
+        df = pd.DataFrame({"Open": closes, "High": highs, "Low": lows, "Close": closes, "Volume": np.full(n, 1_000_000)})
+        assert Stochastic().compute(df).signal == -1
+
+    def test_neutral_in_mid_range(self):
+        n = 100
+        highs = np.full(n, 110.0)
+        lows = np.full(n, 90.0)
+        closes = np.full(n, 100.0)  # exactly mid-range → %K = 50
+        df = pd.DataFrame({"Open": closes, "High": highs, "Low": lows, "Close": closes, "Volume": np.full(n, 1_000_000)})
+        assert Stochastic().compute(df).signal == 0
 
 
 # --- Live smoke test ---

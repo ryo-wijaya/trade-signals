@@ -7,16 +7,17 @@ FastAPI app that runs technical analysis on a stock watchlist and sends reports 
 Two background jobs run Mon-Fri:
 
 - **Batch report** — sends a full summary for every ticker once daily after market close (4:05pm ET by default).
-- **Priority alert** — runs every 30 minutes during market hours. Fires only when all indicators agree on direction and the price structure rule confirms the move.
+- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 4 of 5 indicators agree on direction and the price structure rule confirms the move.
 
 Both intervals are configurable at runtime without restarting.
 
-| Indicator | Buy | Sell |
-|---|---|---|
-| 200 EMA | Price above EMA | Price below EMA |
-| Bollinger Bands (20, 2) | Price near lower band | Price near upper band |
-| RSI(14) + RSI MA(14) | RSI above its MA | RSI below its MA |
-| CMF(20) | CMF above +0.05 | CMF below -0.05 |
+| Indicator | Buy | Sell | Neutral |
+|---|---|---|---|
+| 50 EMA | Price above EMA | Price below EMA | — |
+| 200 EMA | Price above EMA | Price below EMA | — |
+| Bollinger Bands (20, 2) | Price near lower band | Price near upper band | Mid-range |
+| RSI(14) + RSI MA(14) | RSI above its MA | RSI below its MA | — |
+| Stochastic(14, 3) | %K below 20 (oversold) | %K above 80 (overbought) | %K 20–80 |
 
 Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
 
@@ -49,6 +50,8 @@ Edit `.env`:
 ```
 TELEGRAM_BOT_TOKEN=your_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
+TELEGRAM_ALLOWED_CHAT_IDS=your_chat_id_here   # comma-separated; only these can run bot commands
+TRADE_SIGNALS_API_KEY=a_long_random_secret    # required to call the REST API; omit to disable auth in dev
 ```
 
 **4. Run**
@@ -77,6 +80,10 @@ Plain symbols default to US listings. For other exchanges use Yahoo Finance's su
 
 ## REST API
 
+The REST API is an alternative management interface for scripts or tooling. The Telegram bot does not use it — bot commands call config functions directly in-process. If you never need to manage the app from outside Telegram, you can ignore these endpoints entirely.
+
+All endpoints require the `X-API-Key` header when `TRADE_SIGNALS_API_KEY` is set.
+
 ```bash
 GET  /api/config/watchlist
 POST /api/config/watchlist          {"add": ["GOOG"], "remove": ["AMZN"]}
@@ -89,7 +96,21 @@ GET  /api/config/priority-interval
 POST /api/config/priority-interval  {"priority_interval_minutes": 15}
 ```
 
+Example with auth:
+```bash
+curl -H "X-API-Key: your_secret" https://your-app-url/api/config/watchlist
+```
+
 Interactive docs at `http://localhost:8000/docs`.
+
+## Security
+
+Two env vars protect the app when deployed:
+
+- **`TELEGRAM_ALLOWED_CHAT_IDS`** — comma-separated list of Telegram chat IDs that can run bot commands. Anyone outside the list is silently rejected. Set this to your own chat ID so strangers who find your bot can't touch it.
+- **`TRADE_SIGNALS_API_KEY`** — secret key required in the `X-API-Key` header for all REST API calls. Without it, anyone with your Cloud Run URL can modify your watchlist. If this env var is not set, the API is open (useful in local dev).
+
+On **Cloud Run**, set `--min-instances=1` — the scheduler and Telegram polling loop must stay running continuously. Without this, Cloud Run scales to zero on idle and no scheduled reports fire.
 
 ## Configuration reference
 
@@ -102,10 +123,11 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
   "priority_interval_minutes": 30,
 
   "indicators": {
-    "ema":       { "window_days": 200 },
-    "bollinger": { "window_days": 20, "std_dev": 2, "buffer_pct": 0.01 },
-    "rsi":       { "window_days": 14, "ma_window_days": 14 },
-    "cmf":       { "window_days": 20, "threshold": 0.05 }
+    "ema50":       { "window_days": 50 },
+    "ema":         { "window_days": 200 },
+    "bollinger":   { "window_days": 20, "std_dev": 2, "buffer_pct": 0.01 },
+    "rsi":         { "window_days": 14, "ma_window_days": 14 },
+    "stochastic":  { "window_days": 14, "smooth_window": 3, "oversold": 20, "overbought": 80 }
   },
 
   "data": {
@@ -124,7 +146,8 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "rth_close_hour": 16,
     "minute_offset": 5,
     "valid_batch_intervals": [1, 2, 4],
-    "valid_priority_intervals": [15, 30, 60]
+    "valid_priority_intervals": [15, 30, 60],
+    "priority_min_signals": 4
   },
 
   "display": {
@@ -145,10 +168,11 @@ app/
   indicators/       # one file per indicator
     base.py         # BaseIndicator interface
     engine.py       # data fetching and registry
+    ema50.py
     ema.py
     bollinger.py
     rsi.py
-    cmf.py
+    stochastic.py
   rules/            # one file per rule
     base.py         # BaseRule interface
     registry.py     # register(), apply_rules()
@@ -159,6 +183,7 @@ app/
     watchlist.py
     settings.py
     admin.py
+  auth.py           # REST API key validation
   bot.py            # Telegram polling loop
   scheduler.py      # background jobs
   telegram.py       # message formatting
@@ -192,10 +217,10 @@ register(MyIndicator())
 2. Add one import to `app/indicators/__init__.py`:
 
 ```python
-from app.indicators import ema, bollinger, rsi, cmf, your_indicator  # noqa: F401
+from app.indicators import ema50, ema, bollinger, rsi, stochastic, your_indicator  # noqa: F401
 ```
 
-The indicator appears in all reports automatically. The priority alert threshold adjusts to match the total number of indicators.
+The indicator appears in all reports automatically. Order in the import list controls order in the message.
 
 ## Adding a rule
 
@@ -244,23 +269,27 @@ If you create a new file, import it in `app/commands/__init__.py`.
 
 ## Indicator reference
 
-All four indicators must agree before a priority alert fires.
+A priority alert fires when at least 4 of 5 indicators agree on direction and the price structure rule passes.
+
+### 50 EMA
+
+Tracks the medium-term trend (~10 weeks). Price above the 50 EMA means the stock has been climbing recently. Reacts faster than the 200 EMA and is useful for catching trend changes earlier.
 
 ### 200 EMA
 
-Tracks the long-term trend. Price above the 200 EMA means the stock is in an uptrend; below means a downtrend. Most traders treat this as a hard filter and will not buy a stock below its 200 EMA.
+Tracks the long-term trend (~40 weeks). Price above the 200 EMA means the stock is in a long-term uptrend. Most institutional traders treat this as a hard filter — they won't buy a stock below its 200 EMA.
 
 ### Bollinger Bands
 
-Places upper and lower bands 2 standard deviations from a 20-day moving average. Price near the lower band is cheap relative to recent history; near the upper band is extended. A 1% buffer is applied to each band to reduce noise.
+Places upper and lower bands 2 standard deviations from a 20-day moving average. Price near the lower band means the stock is cheap relative to recent volatility (mean reversion buy). Near the upper band means it's extended (mean reversion sell). A 1% buffer reduces noise at the edges.
 
 ### RSI + RSI MA
 
-RSI measures the speed of recent price moves on a 0–100 scale. This app compares RSI to its own 14-day moving average rather than using fixed thresholds like 70/30. When RSI crosses above its MA, momentum is picking up; when it crosses below, momentum is fading. This reacts earlier than fixed levels.
+RSI measures the speed of recent price moves on a 0–100 scale. Rather than using fixed levels (70/30), this compares RSI to its own 14-day moving average. When RSI rises above its MA, momentum is accelerating. When it falls below, momentum is fading. This reacts faster than fixed thresholds.
 
-### CMF
+### Stochastic(14, 3)
 
-Chaikin Money Flow measures whether volume is flowing into or out of a stock. Above +0.05 signals buying pressure; below -0.05 signals selling pressure. The zone in between is treated as neutral to filter out low-conviction readings.
+Measures where today's close sits within the high-low range of the last 14 days. %K below 20 means the stock is near the bottom of its recent range (oversold, mean reversion buy). %K above 80 means it's near the top (overbought, mean reversion sell). Complements Bollinger — Bollinger uses standard deviation of closes, Stochastic uses the actual price range.
 
 ### Price structure confirmation
 

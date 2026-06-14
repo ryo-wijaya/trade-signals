@@ -1,11 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from app.auth import require_api_key
 from app.config import (
     load_watchlist, save_watchlist, load_interval, load_priority_interval,
     load_valid_intervals, load_valid_priority_intervals,
 )
 
-router = APIRouter(prefix="/api/config")
+router = APIRouter(prefix="/api/config", dependencies=[Depends(require_api_key)])
 
 
 class WatchlistUpdate(BaseModel):

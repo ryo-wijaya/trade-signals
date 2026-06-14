@@ -81,7 +81,7 @@ def _block(r: IndicatorResult) -> str:
 def build_batch_report(results: list[IndicatorResult], timestamp: str, title: str = "Market Report") -> str:
     lines = [f"<b>{title}</b>  {timestamp}\n"]
     for r in results:
-        lines.append(f"<b>{r.ticker}</b>  {_call(r.score, len(r.signals))}")
+        lines.append(f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score, len(r.signals))}")
         lines.append(_block(r))
         lines.append("")
     lines.append("-" * 24)

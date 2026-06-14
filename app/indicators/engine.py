@@ -85,7 +85,9 @@ def analyze(ticker: str) -> IndicatorResult:
 
 def analyze_tickers(tickers: list[str]) -> tuple[list[IndicatorResult], list[IndicatorResult]]:
     from app.config import load_config
-    sleep_secs = load_config().get("data", {}).get("ticker_sleep_seconds", 0.5)
+    cfg = load_config()
+    sleep_secs = cfg.get("data", {}).get("ticker_sleep_seconds", 0.5)
+    min_signals = cfg.get("scheduler", {}).get("priority_min_signals", len(_INDICATORS))
     results, alerts = [], []
     for i, ticker in enumerate(tickers):
         if i > 0:
@@ -93,7 +95,7 @@ def analyze_tickers(tickers: list[str]) -> tuple[list[IndicatorResult], list[Ind
         try:
             r = analyze(ticker)
             results.append(r)
-            if _INDICATORS and abs(r.score) == len(_INDICATORS) and r.rules_passed:
+            if _INDICATORS and abs(r.score) >= min_signals and r.rules_passed:
                 alerts.append(r)
         except Exception as exc:
             print(f"[indicators] {ticker}: {exc}")

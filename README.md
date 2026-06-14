@@ -7,7 +7,7 @@ FastAPI app that runs technical analysis on a stock watchlist during market hour
 Two background jobs run Mon-Fri during US market hours:
 
 - **Batch report** - sends a summary for every ticker. Default every 2 hours, configurable to 1, 2, or 4 hours.
-- **Priority check** - runs silently every 30 minutes. Only sends an alert when all four indicators agree on direction. Configurable to 15, 30, or 60 minutes.
+- **Priority check** - runs silently every 30 minutes. Only sends an alert when all four indicators agree on direction AND price structure confirms the move (close above prev close and bar low above prev low for buy; close below prev close and bar high below prev high for sell). Configurable to 15, 30, or 60 minutes.
 
 Both can be changed at runtime without restarting.
 
@@ -18,7 +18,7 @@ Indicators run on 2-hour RTH bars:
 | 200 EMA | Price above EMA | Price below EMA |
 | Bollinger Bands (20, 2o) | Price near lower band | Price near upper band |
 | RSI(14) + RSI MA(14) | RSI above its MA | RSI below its MA |
-| CMF(20) | CMF positive | CMF negative |
+| CMF(20) | CMF above +0.05 | CMF below -0.05 |
 
 ## Setup
 
@@ -119,6 +119,10 @@ app/
     bollinger.py
     rsi.py
     cmf.py
+  rules/            # one file per rule
+    base.py         # BaseRule interface
+    registry.py     # register(), apply_rules()
+    price_structure.py  # price structure confirmation
   commands/         # one file per command group
     registry.py     # @command decorator
     signals.py
@@ -163,6 +167,38 @@ from app.indicators import ema, bollinger, rsi, cmf, your_indicator  # noqa: F40
 
 The indicator appears in all reports automatically. The priority alert threshold adjusts to match the total number of indicators.
 
+## Adding a rule
+
+Rules are checked after indicators compute. All rules must pass for a priority alert to fire. Rules do not affect the batch report.
+
+1. Create `app/rules/your_rule.py`:
+
+```python
+import pandas as pd
+from app.rules.base import BaseRule, RuleResult
+from app.rules.registry import register
+
+class MyRule(BaseRule):
+    name = "my_rule"
+
+    def check(self, df: pd.DataFrame, result) -> RuleResult:
+        # result.score: current total signal score
+        # result.price: current close
+        # result.prev_close: previous bar close
+        # df: full OHLCV dataframe (2h RTH bars)
+        if some_condition:
+            return RuleResult(passed=False, reason="explanation for logs")
+        return RuleResult(passed=True, reason="")
+
+register(MyRule())
+```
+
+2. Add one import to `app/rules/__init__.py`:
+
+```python
+from app.rules import price_structure, your_rule  # noqa: F401
+```
+
 ## Adding a bot command
 
 Add a function to any file in `app/commands/`:
@@ -198,10 +234,18 @@ Tracks the long-term trend. Price above the 200 EMA means the stock is in an upt
 
 Places upper and lower bands 2 standard deviations from a 20-period moving average. When price touches the lower band the stock is cheap relative to recent history and often bounces. When it touches the upper band the stock is extended and often pulls back. A 1% buffer is applied to each band to reduce noise.
 
+Note: touching the lower band marks a cheap price, not a reversal. The price structure rule must also confirm before any alert fires.
+
+### Price structure confirmation
+
+Priority alerts require a two-bar price structure before firing. For a buy alert, the current bar must close above the previous bar's close AND its low must be above the previous bar's low. For a sell alert, the current bar must close below the previous bar's close AND its high must be below the previous bar's high.
+
+The higher-low check is the more important of the two. A dead-cat bounce can produce a higher close but will still print a lower low as price whipsaws. Requiring both a higher close and a higher low filters those out. This is a gate on the alert, not a fifth indicator. Indicators can show Strong Buy while price is still falling, and no alert fires until both structural conditions are met.
+
 ### RSI + RSI MA
 
 RSI measures the speed of recent price moves on a scale of 0 to 100. Instead of fixed levels like 70/30, this app compares RSI to its own 14-period moving average. When RSI crosses above its MA, momentum is picking up. When it crosses below, momentum is fading. This reacts earlier than fixed thresholds.
 
 ### CMF
 
-Chaikin Money Flow measures whether volume is flowing into or out of a stock. It looks at where price closes within each bar's range and weights it by volume. Positive CMF means buying pressure is dominant. Negative means selling pressure is dominant. A stock rising with negative CMF is a warning that the move may not last.
+Chaikin Money Flow measures whether volume is flowing into or out of a stock. It looks at where price closes within each bar's range and weights it by volume. A reading above +0.05 signals genuine buying pressure. A reading below -0.05 signals genuine selling pressure. The zone between -0.05 and +0.05 is treated as neutral. This threshold filters out marginal readings where CMF is barely positive or negative but has no real conviction behind it. A stock rising with negative CMF is a warning that the move may not last.

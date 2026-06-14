@@ -67,6 +67,53 @@ fastapi dev main.py        # development
 uvicorn main:app           # production
 ```
 
+## Deploy to Fly.io
+
+I use Fly.io to deploy my app for free, so the fly.toml file and fly-deploy workflow will exist. But feel free to use anything.
+
+**1. Install flyctl and log in**
+
+```bash
+brew install flyctl
+fly auth login
+```
+
+**2. Create the app and volume**
+
+```bash
+fly launch --no-deploy
+fly volumes create trade_signals_data --region sin --size 1
+```
+
+**3. Set secrets**
+
+```bash
+fly secrets set \
+  TELEGRAM_BOT_TOKEN=your_token \
+  TELEGRAM_CHAT_ID=your_chat_id \
+  TELEGRAM_ALLOWED_CHAT_IDS=your_chat_id \
+  TRADE_SIGNALS_API_KEY=your_api_key \
+  OPENROUTER_API_KEY=your_openrouter_key
+```
+
+Generate a random `TRADE_SIGNALS_API_KEY` with: `openssl rand -hex 32`
+
+**4. Deploy**
+
+```bash
+fly deploy
+```
+
+On first boot the app copies `config.json` from the image to the persistent volume at `/data/config.json`. All subsequent watchlist and interval changes made via Telegram are written there and survive redeploys.
+
+**Useful commands**
+
+```bash
+fly logs          # tail live logs
+fly status        # check machine health
+fly ssh console   # shell into the running container
+```
+
 ## Bot commands
 
 | Command | Description |

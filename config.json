@@ -52,7 +52,7 @@
   },
   "llm": {
     "model": "perplexity/sonar-pro",
-    "max_tokens": 150
+    "max_tokens": 100
   },
 
   "explanations": [

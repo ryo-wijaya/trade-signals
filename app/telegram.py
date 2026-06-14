@@ -62,7 +62,7 @@ def _block(r: IndicatorResult) -> str:
     if r.rule_results:
         rows.append("")
         for name, passed, reason in r.rule_results:
-            tag = "PASS" if passed else "FAIL"
+            tag = "confirmed" if passed else "unmet"
             rlabel = _RULE_LABELS.get(name, name)
             if passed:
                 if r.score > 0:
@@ -93,8 +93,9 @@ def build_batch_report(
         buys     = sum(1 for _, _, s in r.signals if s.signal == 1)
         sells    = sum(1 for _, _, s in r.signals if s.signal == -1)
         neutrals = sum(1 for _, _, s in r.signals if s.signal == 0)
-        breakdown = f"▲{buys} ▼{sells} ─{neutrals}"
-        lines.append(f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score, len(r.signals))}  {breakdown}")
+        breakdown = f"Buy({buys})  Sell({sells})  Neutral({neutrals})"
+        lines.append(f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score, len(r.signals))}")
+        lines.append(f"<code>{breakdown}</code>")
         lines.append(_block(r))
         if summaries and (summary := summaries.get(r.ticker)):
             lines.append(f"\n{html.escape(summary)}")

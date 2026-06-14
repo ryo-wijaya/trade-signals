@@ -38,9 +38,9 @@ async def get_summary(r: IndicatorResult) -> str:
     prompt = (
         f"Stock: {r.ticker} at ${r.price:.2f}. Technical signal: {call}.\n"
         f"Indicators:\n{_indicator_text(r)}\n\n"
-        f"In 1-2 sentences, give a direct buy/hold/sell decision driven primarily by these indicators. "
-        f"Then in 1 sentence, note any news from the past 2 weeks that confirms or contradicts this view. "
-        f"Plain text only — no markdown, no bold, no bullet points, no citation numbers."
+        f"In 1 sentence, give a direct buy/hold/sell decision based on these indicators. "
+        f"In 1 sentence, note any recent news that confirms or contradicts this. "
+        f"Plain text only — no markdown, no bold, no bullets, no citation numbers."
     )
 
     try:

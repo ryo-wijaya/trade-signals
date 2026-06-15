@@ -8,27 +8,11 @@ import httpx
 from app.commands.registry import command
 from app.config import load_watchlist, load_config
 from app.indicators import analyze_tickers, IndicatorResult
-from app.telegram import send, now_sgt, _call
+from app.telegram import send, now_sgt, _call, split_message
 
 log = logging.getLogger(__name__)
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-
-def _split_message(text: str, limit: int = 4000) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks, current = [], ""
-    for para in text.split("\n\n"):
-        block = (para + "\n\n")
-        if len(current) + len(block) > limit:
-            if current:
-                chunks.append(current.rstrip())
-            current = block
-        else:
-            current += block
-    if current:
-        chunks.append(current.rstrip())
-    return chunks or [text[:limit]]
 
 
 def _build_prompt(results: list[IndicatorResult]) -> str:
@@ -102,7 +86,7 @@ async def handle_portfolio_analysis(args: list[str], chat_id: str) -> None:
             header = f"<b>Portfolio Analysis</b>  {now_sgt()}\n<code>{tickers_str}</code>\n\n"
             body = html.escape(analysis)
 
-            chunks = _split_message(header + body, limit=4000)
+            chunks = split_message(header + body)
             for chunk in chunks:
                 await send(chunk, chat_id=chat_id)
 

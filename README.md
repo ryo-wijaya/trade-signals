@@ -209,8 +209,8 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
 
   "llm": {
     "model": "perplexity/sonar-pro",
-    "max_tokens": 100,
-    "detailed_max_tokens": 250,
+    "max_tokens": 80,
+    "detailed_max_tokens": 120,
     "portfolio_max_tokens": 1000
   }
 }

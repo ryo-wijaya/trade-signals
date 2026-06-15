@@ -3,15 +3,33 @@ import os
 import shutil
 from pathlib import Path
 
+# Keys written by the user via Telegram commands — preserved across deploys.
+_USER_KEYS = {"watchlist", "interval_hours", "priority_interval_minutes"}
+
 _CONFIG_DIR = os.getenv("CONFIG_DIR")
 if _CONFIG_DIR:
     CONFIG_PATH = Path(_CONFIG_DIR) / "config.json"
-    # On first deploy the volume is empty — seed from the bundled config.
-    if not CONFIG_PATH.exists():
-        _bundled = Path(__file__).parent.parent / "config.json"
-        if _bundled.exists():
-            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _bundled = Path(__file__).parent.parent / "config.json"
+    if _bundled.exists():
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not CONFIG_PATH.exists():
             shutil.copy(_bundled, CONFIG_PATH)
+        else:
+            # On every redeploy: refresh all non-user keys from the bundled config
+            # so that changes to llm settings, indicators, scheduler etc. take effect
+            # without requiring manual edits to the persistent volume.
+            try:
+                with open(_bundled) as _f:
+                    _base = json.load(_f)
+                with open(CONFIG_PATH) as _f:
+                    _current = json.load(_f)
+                for _k in _USER_KEYS:
+                    if _k in _current:
+                        _base[_k] = _current[_k]
+                with open(CONFIG_PATH, "w") as _f:
+                    json.dump(_base, _f, indent=2)
+            except Exception:
+                pass  # fall back to whatever is on disk
 else:
     CONFIG_PATH = Path(__file__).parent.parent / "config.json"
 

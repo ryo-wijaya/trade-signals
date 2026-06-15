@@ -9,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.config import load_watchlist, load_interval, save_interval, load_priority_interval, save_priority_interval
 from app.indicators import analyze_tickers, IndicatorResult
 from app.market_calendar import is_trading_day
-from app.telegram import build_batch_report, build_priority_alert, send, now_sgt
+from app.telegram import build_batch_report, build_priority_alert, send, now_sgt, split_message
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -84,7 +84,8 @@ def run_analysis() -> None:
         for r, outcome in zip(results, settled):
             if isinstance(outcome, str) and outcome:
                 summaries[r.ticker] = outcome
-        await send(build_batch_report(results, now_sgt(), summaries=summaries))
+        for chunk in split_message(build_batch_report(results, now_sgt(), summaries=summaries)):
+            await send(chunk)
 
     _run(_send)
 

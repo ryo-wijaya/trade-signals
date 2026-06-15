@@ -40,6 +40,23 @@ async def send(text: str, chat_id: str | None = None) -> None:
             log.error("telegram send failed %d: %s", resp.status_code, resp.text)
 
 
+def split_message(text: str, limit: int = 4000) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks, current = [], ""
+    for para in text.split("\n\n"):
+        block = para + "\n\n"
+        if len(current) + len(block) > limit:
+            if current:
+                chunks.append(current.rstrip())
+            current = block
+        else:
+            current += block
+    if current:
+        chunks.append(current.rstrip())
+    return chunks or [text[:limit]]
+
+
 def _call(score: int, max_score: int) -> str:
     if score == max_score:  return "Strong Buy"
     if score > 0:           return "Buy"

@@ -4,7 +4,7 @@ import logging
 from app.commands.registry import command
 from app.config import load_watchlist
 from app.indicators import analyze_tickers
-from app.telegram import send, build_batch_report, build_priority_alert, now_sgt
+from app.telegram import send, build_batch_report, build_priority_alert, now_sgt, split_message
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ async def handle_signals(args: list[str], chat_id: str) -> None:
     if results:
         ts = now_sgt()
         title = "Stock Report" if args else "Market Report"
-        await send(build_batch_report(results, ts, title=title), chat_id=chat_id)
+        for chunk in split_message(build_batch_report(results, ts, title=title)):
+            await send(chunk, chat_id=chat_id)
     elif not priority_alerts:
         await send("No results returned. Check ticker symbols.", chat_id=chat_id)

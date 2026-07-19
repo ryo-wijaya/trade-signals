@@ -6,7 +6,7 @@ import pandas as pd
 @dataclass
 class RuleResult:
     passed: bool
-    reason: str  # empty when passed, shown in logs when blocked
+    reason: str  # shown in the report for both pass and fail
 
 
 class BaseRule(ABC):

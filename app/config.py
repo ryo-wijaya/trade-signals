@@ -45,6 +45,9 @@ _DEFAULTS = {
         "rsi": {"window_days": 14, "ma_window_days": 14, "oversold": 30, "overbought": 70},
         "stochastic": {"window_days": 14, "smooth_window": 3, "oversold": 20, "overbought": 80},
     },
+    "rules": {
+        "volume_confirmation": {"window_days": 20, "min_ratio": 1.0},
+    },
     "data": {
         "history_period": "400d",
         "bar_interval": "1d",

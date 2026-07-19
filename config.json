@@ -28,6 +28,12 @@
       "overbought": 80
     }
   },
+  "rules": {
+    "volume_confirmation": {
+      "window_days": 20,
+      "min_ratio": 1.0
+    }
+  },
   "data": {
     "history_period": "400d",
     "bar_interval": "1d",
@@ -87,11 +93,15 @@
     },
     {
       "name": "Structure Rule",
-      "text": "Gate on priority alerts only — doesn't affect the batch report score. For a buy alert: current bar must close higher AND make a higher low vs the prior bar. For a sell alert: lower close AND lower high. Blocks dead-cat bounces (higher close but lower low) and false breakouts."
+      "text": "Gates BUY alerts only — doesn't affect the batch report score or sell alerts. The current bar must close higher AND make a higher low vs the prior bar, proving the bounce has started. Blocks dead-cat bounces. Backtested: structure-confirmed buys averaged +4.7% over 20 days vs +2.0% unfiltered."
+    },
+    {
+      "name": "Volume Rule",
+      "text": "Gates SELL alerts only. The current bar's volume must be at or above its 20-day average — overbought plus heavy volume means real distribution. Backtested: volume-confirmed sells averaged -2.7% over 20 days vs -1.6% unfiltered. Each rule only gates its own side because backtesting showed it hurt the other."
     },
     {
       "name": "Priority Alert",
-      "text": "Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought (trigger score >= +2 or <= -2) AND the structure rule confirms the bounce/rollover has started. This is the buy-low/sell-high entry signal."
+      "text": "Fires when at least 2 of the 3 mean-reversion indicators agree (trigger score >= +2 or <= -2) AND the side's confirmation passes: bounce structure for buys, above-average volume for sells. One alert per stock per direction per day. Edge shows over 10-20 trading days — treat as multi-week swing entries."
     }
   ]
 }

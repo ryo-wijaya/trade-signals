@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 
 _RULE_LABELS = {
     "price_structure": "Structure",
+    "volume_confirmation": "Volume",
 }
 
 
@@ -74,31 +75,39 @@ def _call(score: int) -> str:
     return "Strong Sell"
 
 
-_SEP = "─" * 16
+def signal_line(r: IndicatorResult) -> str:
+    """One-line plain-English reading of the current signal state.
+
+    States mirror the backtest findings: confirmed +/-2 triggers carry the
+    edge over 10-20 trading days; gates are asymmetric (structure confirms
+    buys, volume confirms sells) because each gate only helped its own side.
+    """
+    n = r.max_score
+    if r.score >= 2:
+        if r.rules_passed:
+            return "Signal: BUY ENTRY — oversold, bounce confirmed. Swing 10–20 days."
+        return "Signal: BUY setup — oversold, bounce not confirmed yet. Wait."
+    if r.score <= -2:
+        if r.rules_passed:
+            return "Signal: SELL ENTRY — overbought on high volume. Swing 10–20 days."
+        return "Signal: SELL setup — overbought, volume weak. Wait."
+    if abs(r.score) == 1:
+        side = "oversold" if r.score > 0 else "overbought"
+        return f"Signal: none — 1 of {n} {side} votes. No action."
+    return "Signal: none — neutral. No action."
 
 
 def _block(r: IndicatorResult) -> str:
-    rows = []
-    for i, (_, label, sig) in enumerate(r.signals):
-        if i > 0:
-            rows.append(_SEP)
-        rows.append(f"{label:<10}  {html.escape(sig.display)}")
+    rows = [f"{label:<10}  {html.escape(sig.display)}" for _, label, sig in r.signals]
 
-    if r.rule_results:
+    # Rules with an empty reason don't apply to the current side — hidden.
+    applicable = [(n, p, re) for n, p, re in r.rule_results if re]
+    if applicable:
         rows.append("")
-        for name, passed, reason in r.rule_results:
-            tag = "confirmed" if passed else "unmet"
+        for name, passed, reason in applicable:
+            tag = "✓" if passed else "✗"
             rlabel = _RULE_LABELS.get(name, name)
-            if passed:
-                if r.score > 0:
-                    msg = "higher close and higher low"
-                elif r.score < 0:
-                    msg = "lower close and lower high"
-                else:
-                    msg = "no directional bias"
-            else:
-                msg = html.escape(reason)
-            rows.append(f"{rlabel:<10}  {tag}  {msg}")
+            rows.append(f"{rlabel:<10}  {tag} {html.escape(reason)}")
 
     return "<code>" + "\n".join(rows) + "</code>"
 
@@ -111,18 +120,13 @@ def build_stock_messages(
 ) -> list[str]:
     messages = [f"<b>{title}</b>  {timestamp}"]
     for r in results:
-        reversion = r.reversion_signals
-        buys     = sum(1 for _, _, s in reversion if s.signal == 1)
-        sells    = sum(1 for _, _, s in reversion if s.signal == -1)
-        neutrals = sum(1 for _, _, s in reversion if s.signal == 0)
-        breakdown = f"Buy({buys})  Sell({sells})  Neutral({neutrals})"
         header = f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score)}"
         if r.trend_label:
             header += f"  ·  {html.escape(r.trend_label)}"
         lines = [
             header,
-            f"<code>{breakdown}</code>",
             _block(r),
+            f"<i>{html.escape(signal_line(r))}</i>",
         ]
         if summaries and (summary := summaries.get(r.ticker)):
             lines.append(f"\n{html.escape(summary)}")
@@ -139,4 +143,5 @@ def build_priority_alert(r: IndicatorResult) -> str:
         f"${r.price:.2f}",
         "",
         _block(r),
+        f"<i>{html.escape(signal_line(r))}</i>",
     ])

@@ -30,6 +30,11 @@ class TestBuildPrompt:
         assert '"BUY — reason"' in prompt
         assert "buy low, sell high" in prompt
 
+    def test_signal_state_and_horizon_in_prompt(self):
+        prompt = build_prompt(_result())
+        assert "Signal:" in prompt
+        assert "10-20 trading days" in prompt
+
     def test_hold_bias_instructions_removed(self):
         for detailed in (False, True):
             prompt = build_prompt(_result(), detailed=detailed)

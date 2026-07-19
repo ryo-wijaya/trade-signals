@@ -49,17 +49,21 @@ _RULES = (
     "- Verdict HOLD only when the setup is genuinely neutral or fundamentals contradict "
     "the setup.\n"
     "A downtrend regime raises the bar for BUY (falling-knife risk); mention it if relevant.\n"
+    "This system's edge appears over 10-20 trading days — frame your verdict as a "
+    "multi-week swing decision, not a day trade. A confirmed ENTRY state strengthens "
+    "the technical case; an unconfirmed SETUP means the reversal hasn't started yet.\n"
 )
 
 
 def build_prompt(r: IndicatorResult, detailed: bool = False) -> str:
-    from app.telegram import _call
+    from app.telegram import _call, signal_line
     indicators = "; ".join(f"{label}: {sig.display}" for _, label, sig in r.signals)
     header = (
         f"{r.ticker} at ${r.price:.2f}. "
         f"Technical setup: {_call(r.score)} (trigger score {r.score:+d}/{r.max_score}). "
         f"Trend: {r.trend_label or 'unknown'}.\n"
-        f"Indicators: {indicators}\n\n"
+        f"Indicators: {indicators}\n"
+        f"{signal_line(r)}\n\n"
     )
     if detailed:
         ask = (

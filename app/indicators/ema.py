@@ -22,12 +22,8 @@ class EMA200(BaseIndicator):
         if math.isnan(ema_val):
             return insufficient(kind=self.kind)
         if price > ema_val:
-            display = f"uptrend  above EMA ${ema_val:.2f}"
-            signal = 1
-        else:
-            display = f"downtrend  below EMA ${ema_val:.2f}"
-            signal = -1
-        return SignalResult(signal=signal, display=display, kind=self.kind, value=ema_val)
+            return SignalResult(signal=1, display=f"above  ${ema_val:.2f}", kind=self.kind, value=ema_val)
+        return SignalResult(signal=-1, display=f"below  ${ema_val:.2f}", kind=self.kind, value=ema_val)
 
 
 register(EMA200())

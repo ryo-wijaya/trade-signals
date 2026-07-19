@@ -12,7 +12,7 @@
 Three background jobs run automatically:
 
 - **Batch report** — sends a full summary with LLM summaries for every ticker once daily after market close (4:05pm ET by default). Mon–Fri only.
-- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought and the price structure rule confirms the bounce/rollover. Mon–Fri only.
+- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought AND the side's confirmation passes: bounce structure for buys, above-average volume for sells (gates are asymmetric — backtesting showed each gate only helps its own side). Max one alert per stock per direction per day. Mon–Fri only.
 - **Earnings calendar** — sends next earnings dates for all watchlist tickers every Saturday midnight SGT.
 
 Batch report and priority alert intervals are configurable at runtime without restarting.
@@ -40,7 +40,9 @@ RSI vs its own 14-day MA (momentum rising/falling) is still shown in brackets as
 
 MACD was deliberately not added: it is another trend-following momentum vote, and mixing trend votes into the mean-reversion score is exactly what previously suppressed buy-low/sell-high signals. The 50/200 EMA cross covers the useful trend-cross information as context instead.
 
-**AI summary** (`/signalsplus`, batch report, `/portfolioanalysis`): the LLM receives all indicator readings plus the trend regime and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
+**Signal line**: every stock message and alert ends with a plain-English state derived from the backtest findings — `BUY/SELL ENTRY` when a ±2 trigger has its side's confirmation (act on it, 10–20 trading day swing horizon), `setup` when the trigger fired but confirmation is missing (watch, don't enter), or `none` when there's no edge. Only the rule relevant to the current side is shown in the report.
+
+**AI summary** (`/signalsplus`, batch report, `/portfolioanalysis`): the LLM receives all indicator readings, the trend regime, and the signal state, and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), framed as multi-week swing decisions, with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
 
 Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
 
@@ -202,6 +204,10 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "stochastic":  { "window_days": 14, "smooth_window": 3, "oversold": 20, "overbought": 80 }
   },
 
+  "rules": {
+    "volume_confirmation": { "window_days": 20, "min_ratio": 1.0 }
+  },
+
   "data": {
     "history_period": "400d",
     "bar_interval": "1d",
@@ -280,8 +286,28 @@ RSI measures the speed of recent price moves on a 0–100 scale. Below 30 = over
 
 Measures where today's close sits within the high-low range of the last 14 days. %K below 20 means the stock is near the bottom of its recent range (oversold, mean reversion buy). %K above 80 means it's near the top (overbought, mean reversion sell). Complements Bollinger — Bollinger uses standard deviation of closes, Stochastic uses the actual price range.
 
-### Price structure confirmation
+### Price structure confirmation (buys only)
 
-Priority alerts require a two-bar price structure. For a buy: the current bar must close above the previous close AND its low must be above the previous bar's low. For a sell: close below the previous close AND high below the previous bar's high.
+Buy alerts require a two-bar price structure: the current bar must close above the previous close AND its low must be above the previous bar's low — proof the bounce has started. Backtested, structure-confirmed buys averaged +4.7% over 20 days vs +2.0% unfiltered. It is NOT applied to sells: gating sells on structure erased their edge (+0.18% vs −1.56% unfiltered at 20d).
 
-This rules out dead-cat bounces (higher close but lower low) and short-squeeze fades (lower close but higher high).
+### Volume confirmation (sells only)
+
+Sell alerts require the current bar's volume at or above its 20-day average (`rules.volume_confirmation.min_ratio`, default 1.0) — overbought plus heavy volume means real distribution. Backtested, volume-confirmed sells averaged −2.65% over 20 days vs −1.56% unfiltered (n=277). It is NOT applied to buys: it diluted structure-confirmed buys (+3.0% vs +4.7% at 20d).
+
+## Backtesting
+
+Two tools, both replaying the configured history window (~320 trading days per ticker) and measuring forward returns 5/10/20 days out:
+
+```bash
+python scripts/backtest.py                 # replays the app's exact code path
+python scripts/research.py                 # vectorized sweep of thresholds/gates/variants
+```
+
+Findings from Jul 2026 (14-ticker watchlist, ~4,500 ticker-days) that drove the current design:
+
+- The raw ±2 trigger beats baseline at 20 days (+1.98% buys / −1.56% sells vs −0.11% all-days). ±1 has no edge; unanimous ±3 adds nothing reliable — alert threshold stays at 2.
+- Gates are asymmetric because the data is: structure helps buys and hurts sells; volume helps sells and is neutral-to-negative on buys. Each gate now applies only to its own side.
+- RSI(2) washout (Connors-style) was tested as a 4th input and REJECTED — it degraded every combination it touched.
+- The edge appears at 10–20 trading days, not 5 — alerts are multi-week swing entries.
+
+Re-run `research.py` quarterly as data accumulates before tuning anything.

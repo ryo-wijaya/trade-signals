@@ -109,12 +109,28 @@ def run_earnings_report() -> None:
     _run(_send)
 
 
+# (ticker, side) -> date last alerted; the 30-min check re-fires while a trigger
+# state holds, so without this a confirmed setup would repeat all day.
+_alerted: dict[tuple[str, str], str] = {}
+
+
+def dedupe_alerts(alerts: list[IndicatorResult], today: str) -> list[IndicatorResult]:
+    fresh = []
+    for r in alerts:
+        key = (r.ticker, "buy" if r.score > 0 else "sell")
+        if _alerted.get(key) != today:
+            _alerted[key] = today
+            fresh.append(r)
+    return fresh
+
+
 def run_priority_check() -> None:
     if not is_trading_day(datetime.now(_tz()).date()):
         log.info("priority_check skipped: non-trading day")
         return
     log.info("priority_check started")
     _, priority_alerts = collect_results()
+    priority_alerts = dedupe_alerts(priority_alerts, datetime.now(_tz()).strftime("%Y-%m-%d"))
     if priority_alerts:
         log.info("priority_check: %d alert(s): %s", len(priority_alerts), [r.ticker for r in priority_alerts])
         async def _send():

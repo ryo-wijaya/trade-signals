@@ -27,8 +27,42 @@ class IndicatorResult:
     rule_results: list[tuple[str, bool, str]] = field(default_factory=list)  # (name, passed, reason)
 
     @property
+    def reversion_signals(self) -> list[tuple[str, str, SignalResult]]:
+        return [(n, l, s) for n, l, s in self.signals if s.kind == "reversion"]
+
+    @property
     def score(self) -> int:
-        return sum(s.signal for _, _, s in self.signals)
+        # Trigger score: mean-reversion votes only (oversold = +, overbought = -).
+        # Trend indicators are context and deliberately excluded — netting them in
+        # cancels the buy-low/sell-high signal this score exists to surface.
+        return sum(s.signal for _, _, s in self.reversion_signals)
+
+    @property
+    def max_score(self) -> int:
+        return len(self.reversion_signals)
+
+    @property
+    def trend_score(self) -> int:
+        return sum(s.signal for _, _, s in self.signals if s.kind == "trend")
+
+    @property
+    def trend_label(self) -> str:
+        trend = {n: s for n, _, s in self.signals if s.kind == "trend"}
+        if not trend:
+            return ""
+        if any(s.display == "insufficient history" for s in trend.values()):
+            return "trend unknown"
+        if all(s.signal == 1 for s in trend.values()):
+            label = "uptrend"
+        elif all(s.signal == -1 for s in trend.values()):
+            label = "downtrend"
+        else:
+            label = "mixed trend"
+        ema50 = trend.get("EMA50")
+        ema200 = trend.get("EMA")
+        if ema50 and ema200 and ema50.value is not None and ema200.value is not None:
+            label += " (golden cross)" if ema50.value > ema200.value else " (death cross)"
+        return label
 
 
 def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
@@ -85,11 +119,16 @@ def analyze(ticker: str) -> IndicatorResult:
     return result
 
 
+def is_priority(r: IndicatorResult, min_signals: int) -> bool:
+    return abs(r.score) >= min_signals and r.rules_passed
+
+
 def analyze_tickers(tickers: list[str]) -> tuple[list[IndicatorResult], list[IndicatorResult]]:
     from app.config import load_config
     cfg = load_config()
     sleep_secs = cfg.get("data", {}).get("ticker_sleep_seconds", 0.5)
-    min_signals = cfg.get("scheduler", {}).get("priority_min_signals", len(_INDICATORS))
+    default_min = sum(1 for ind in _INDICATORS if ind.kind == "reversion")
+    min_signals = cfg.get("scheduler", {}).get("priority_min_signals", default_min)
     results, alerts = [], []
     for i, ticker in enumerate(tickers):
         if i > 0:
@@ -97,7 +136,7 @@ def analyze_tickers(tickers: list[str]) -> tuple[list[IndicatorResult], list[Ind
         try:
             r = analyze(ticker)
             results.append(r)
-            if _INDICATORS and abs(r.score) >= min_signals and r.rules_passed:
+            if _INDICATORS and is_priority(r, min_signals):
                 alerts.append(r)
         except Exception as exc:
             log.error("analyze failed for %s: %s", ticker, exc)

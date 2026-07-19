@@ -1,5 +1,6 @@
 {
-  "watchlist": ["AMZN", "BABA", "MSFT", "NVDA"],
+  "watchlist": ["ACN", "AMZN", "BABA", "CRM", "IBIT", "META", "MRSH", "MSFT", "NFLX", "NVDA", "NVO", "PFE", "RDDT", "RXRX"],
+  "favourites": ["AMZN", "BABA", "CRM", "META", "MRSH", "MSFT", "NVO", "RDDT"],
   "interval_hours": 2,
   "priority_interval_minutes": 30,
   "indicators": {
@@ -16,7 +17,9 @@
     },
     "rsi": {
       "window_days": 14,
-      "ma_window_days": 14
+      "ma_window_days": 14,
+      "oversold": 30,
+      "overbought": 70
     },
     "stochastic": {
       "window_days": 14,
@@ -41,7 +44,7 @@
     "minute_offset": 5,
     "valid_batch_intervals": [1, 2, 4],
     "valid_priority_intervals": [15, 30, 60],
-    "priority_min_signals": 3
+    "priority_min_signals": 2
   },
   "display": {
     "timezone": "Asia/Singapore",
@@ -52,19 +55,23 @@
   },
   "llm": {
     "model": "perplexity/sonar-pro",
-    "max_tokens": 80,
-    "detailed_max_tokens": 120,
+    "max_tokens": 160,
+    "detailed_max_tokens": 220,
     "portfolio_max_tokens": 1000
   },
 
   "explanations": [
     {
+      "name": "Rating",
+      "text": "The rating is a mean-reversion trigger score from the 3 voting indicators (Bollinger, Stochastic, RSI): +1/-1 = Lean Buy/Lean Sell, +2/-2 = Buy/Sell, +3/-3 = Strong Buy/Strong Sell, 0 = Hold. Trend (50/200 EMA) is shown next to the rating as context but does NOT vote — otherwise a dip to oversold would always be cancelled out by the downtrend votes and everything would read Hold."
+    },
+    {
       "name": "50 EMA",
-      "text": "Medium-term trend (~10 weeks). Price above = uptrend. Price below = downtrend. Reacts faster than the 200 EMA — useful for catching trend changes earlier."
+      "text": "Medium-term trend context (~10 weeks) — shown, not counted in the score. Price above = uptrend. Price below = downtrend. Reacts faster than the 200 EMA — useful for catching trend changes earlier."
     },
     {
       "name": "200 EMA",
-      "text": "Long-term trend (~40 weeks). The institutional bull/bear benchmark. Price above = stock has been strong for months. Price below = sustained downtrend. Being far below it doesn't mean it'll bounce — it means the trend has been down a long time."
+      "text": "Long-term trend context (~40 weeks) — shown, not counted in the score. The institutional bull/bear benchmark. When the 50 EMA is above the 200 EMA the rating shows 'golden cross' (bullish regime); below shows 'death cross'. A downtrend raises the bar for buying a dip (falling-knife risk)."
     },
     {
       "name": "Bollinger Bands",
@@ -72,7 +79,7 @@
     },
     {
       "name": "RSI",
-      "text": "Momentum gauge — measures the speed of recent gains vs losses, not the price level. RSI above its own 14-day average = momentum accelerating (bullish). RSI below = momentum decelerating (bearish). A stock can have RSI at 45 and still be gaining momentum if it's rising."
+      "text": "Momentum gauge — measures the speed of recent gains vs losses. Votes on absolute levels: below 30 = oversold (buy vote), above 70 = overbought (sell vote), in between = neutral. Whether RSI is rising or falling vs its own 14-day average is shown in brackets as momentum context but doesn't vote."
     },
     {
       "name": "Stochastic",
@@ -81,6 +88,10 @@
     {
       "name": "Structure Rule",
       "text": "Gate on priority alerts only — doesn't affect the batch report score. For a buy alert: current bar must close higher AND make a higher low vs the prior bar. For a sell alert: lower close AND lower high. Blocks dead-cat bounces (higher close but lower low) and false breakouts."
+    },
+    {
+      "name": "Priority Alert",
+      "text": "Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought (trigger score >= +2 or <= -2) AND the structure rule confirms the bounce/rollover has started. This is the buy-low/sell-high entry signal."
     }
   ]
 }

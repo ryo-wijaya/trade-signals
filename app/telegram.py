@@ -1,3 +1,4 @@
+import asyncio
 import html
 import logging
 import os
@@ -29,15 +30,21 @@ async def send(text: str, chat_id: str | None = None) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     target = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not target:
-        log.warning("missing Telegram credentials — message not sent")
+        log.warning("missing Telegram credentials, message not sent")
         return
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            _api("sendMessage"),
-            json={"chat_id": target, "text": text, "parse_mode": "HTML"},
-        )
-        if resp.status_code != 200:
-            log.error("telegram send failed %d: %s", resp.status_code, resp.text)
+        # Paragraph-boundary splitting can in theory separate an unclosed HTML tag
+        # across chunks; acceptable because _block output is a single paragraph.
+        for chunk in split_message(text):
+            payload = {"chat_id": target, "text": chunk, "parse_mode": "HTML"}
+            resp = await client.post(_api("sendMessage"), json=payload)
+            if resp.status_code == 429:
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 1)
+                log.warning("telegram rate limited, retrying after %ss", retry_after)
+                await asyncio.sleep(retry_after)
+                resp = await client.post(_api("sendMessage"), json=payload)
+            if resp.status_code != 200:
+                log.error("telegram send failed %d: %s", resp.status_code, resp.text)
 
 
 def split_message(text: str, limit: int = 4000) -> list[str]:
@@ -57,16 +64,17 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
     return chunks or [text[:limit]]
 
 
-def _call(score: int, max_score: int) -> str:
-    if score == max_score:  return "Strong Buy"
-    if score > 0:           return "Buy"
-    if score == 0:          return "Hold"
-    if score > -max_score:  return "Sell"
+def _call(score: int) -> str:
+    if score >= 3:   return "Strong Buy"
+    if score == 2:   return "Buy"
+    if score == 1:   return "Lean Buy"
+    if score == 0:   return "Hold"
+    if score == -1:  return "Lean Sell"
+    if score == -2:  return "Sell"
     return "Strong Sell"
 
 
-_SEP = "─" * 26
-_STOCK_SEP = "━" * 26
+_SEP = "─" * 16
 
 
 def _block(r: IndicatorResult) -> str:
@@ -95,34 +103,39 @@ def _block(r: IndicatorResult) -> str:
     return "<code>" + "\n".join(rows) + "</code>"
 
 
-def build_batch_report(
+def build_stock_messages(
     results: list[IndicatorResult],
     timestamp: str,
     title: str = "Market Report",
     summaries: dict[str, str] | None = None,
-) -> str:
-    lines = [f"<b>{title}</b>  {timestamp}"]
-    for i, r in enumerate(results):
-        lines.append("")
-        if i > 0:
-            lines.append(_STOCK_SEP)
-            lines.append("")
-        buys     = sum(1 for _, _, s in r.signals if s.signal == 1)
-        sells    = sum(1 for _, _, s in r.signals if s.signal == -1)
-        neutrals = sum(1 for _, _, s in r.signals if s.signal == 0)
+) -> list[str]:
+    messages = [f"<b>{title}</b>  {timestamp}"]
+    for r in results:
+        reversion = r.reversion_signals
+        buys     = sum(1 for _, _, s in reversion if s.signal == 1)
+        sells    = sum(1 for _, _, s in reversion if s.signal == -1)
+        neutrals = sum(1 for _, _, s in reversion if s.signal == 0)
         breakdown = f"Buy({buys})  Sell({sells})  Neutral({neutrals})"
-        lines.append(f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score, len(r.signals))}")
-        lines.append(f"<code>{breakdown}</code>")
-        lines.append(_block(r))
+        header = f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score)}"
+        if r.trend_label:
+            header += f"  ·  {html.escape(r.trend_label)}"
+        lines = [
+            header,
+            f"<code>{breakdown}</code>",
+            _block(r),
+        ]
         if summaries and (summary := summaries.get(r.ticker)):
             lines.append(f"\n{html.escape(summary)}")
-    return "\n".join(lines)
+        messages.append("\n".join(lines))
+    return messages
 
 
 def build_priority_alert(r: IndicatorResult) -> str:
-    call = "Strong Buy" if r.score > 0 else "Strong Sell"
+    header = f"ALERT: <b>{r.ticker}  {_call(r.score)}</b>"
+    if r.trend_label:
+        header += f"  ·  {html.escape(r.trend_label)}"
     return "\n".join([
-        f"ALERT: <b>{r.ticker}  {call}</b>",
+        header,
         f"${r.price:.2f}",
         "",
         _block(r),

@@ -9,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.config import load_watchlist, load_interval, save_interval, load_priority_interval, save_priority_interval
 from app.indicators import analyze_tickers, IndicatorResult
 from app.market_calendar import is_trading_day
-from app.telegram import build_batch_report, build_priority_alert, send, now_sgt, split_message
+from app.telegram import build_stock_messages, build_priority_alert, send, now_sgt
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -74,8 +74,12 @@ def run_analysis() -> None:
 
     async def _send():
         from app.llm import get_summary
+        from app.config import load_favourites
+        favourites = load_favourites()
+        targets = favourites or load_watchlist()
+        title = "Favourites Report" if favourites else "Market Report"
         loop = asyncio.get_running_loop()
-        results, _ = await loop.run_in_executor(None, lambda: analyze_tickers(load_watchlist()))
+        results, _ = await loop.run_in_executor(None, lambda: analyze_tickers(targets))
         log.info("market_analysis complete: %d tickers", len(results))
         if not results:
             return
@@ -84,8 +88,9 @@ def run_analysis() -> None:
         for r, outcome in zip(results, settled):
             if isinstance(outcome, str) and outcome:
                 summaries[r.ticker] = outcome
-        for chunk in split_message(build_batch_report(results, now_sgt(), summaries=summaries)):
-            await send(chunk)
+        for msg in build_stock_messages(results, now_sgt(), title=title, summaries=summaries):
+            await send(msg)
+            await asyncio.sleep(0.3)
 
     _run(_send)
 

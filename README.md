@@ -12,18 +12,35 @@
 Three background jobs run automatically:
 
 - **Batch report** — sends a full summary with LLM summaries for every ticker once daily after market close (4:05pm ET by default). Mon–Fri only.
-- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 3 of 5 indicators agree on direction and the price structure rule confirms the move. Mon–Fri only.
+- **Priority alert** — runs every 30 minutes during market hours. Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought and the price structure rule confirms the bounce/rollover. Mon–Fri only.
 - **Earnings calendar** — sends next earnings dates for all watchlist tickers every Saturday midnight SGT.
 
 Batch report and priority alert intervals are configurable at runtime without restarting.
 
-| Indicator | Buy | Sell | Neutral |
+The strategy is mean reversion: buy oversold, sell overbought. Three indicators vote on the trigger score; the two EMAs describe the trend regime and are shown as context but do not vote — otherwise a dip to oversold would always be cancelled by downtrend votes and every rating would read Hold.
+
+**Voting indicators (trigger score −3..+3):**
+
+| Indicator | Buy vote | Sell vote | Neutral |
 |---|---|---|---|
-| 50 EMA | Price above EMA | Price below EMA | — |
-| 200 EMA | Price above EMA | Price below EMA | — |
 | Bollinger Bands (20, 2) | Price near lower band | Price near upper band | Mid-range |
-| RSI(14) + RSI MA(14) | RSI above its MA | RSI below its MA | — |
+| RSI(14) | Below 30 (oversold) | Above 70 (overbought) | 30–70 |
 | Stochastic(14, 3) | %K below 20 (oversold) | %K above 80 (overbought) | %K 20–80 |
+
+RSI vs its own 14-day MA (momentum rising/falling) is still shown in brackets as context.
+
+**Context indicators (trend regime, not scored):**
+
+| Indicator | Shows |
+|---|---|
+| 50 EMA | Medium-term trend; price above = uptrend |
+| 200 EMA | Long-term trend; 50 EMA above 200 EMA = golden cross, below = death cross |
+
+**Rating scale:** ±1 = Lean Buy / Lean Sell · ±2 = Buy / Sell · ±3 = Strong Buy / Strong Sell · 0 = Hold.
+
+MACD was deliberately not added: it is another trend-following momentum vote, and mixing trend votes into the mean-reversion score is exactly what previously suppressed buy-low/sell-high signals. The 50/200 EMA cross covers the useful trend-cross information as context instead.
+
+**AI summary** (`/signalsplus`, batch report, `/portfolioanalysis`): the LLM receives all indicator readings plus the trend regime and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
 
 Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
 
@@ -120,15 +137,20 @@ fly ssh console   # shell into the running container
 | Command | Description |
 |---|---|
 | `/signals` | Run analysis for the full watchlist |
+| `/signals favourites` | Run analysis for favourited tickers only |
 | `/signals AAPL TSLA` | Run analysis for specific tickers |
 | `/signalsplus` | Signals + live LLM market summary for every watchlist ticker |
+| `/signalsplus favourites` | Signals + LLM summary for favourited tickers only |
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
 | `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks |
 | `/earnings` | Next earnings report dates for watchlist tickers (SGT) — also sent every Saturday midnight SGT |
-| `/watchlist` | View current watchlist |
+| `/watchlist` | View current watchlist (★ marks favourites) |
 | `/add AAPL TSLA` | Add tickers |
-| `/remove AAPL` | Remove a ticker |
+| `/remove AAPL` | Remove a ticker (also unfavourites it) |
+| `/fav AAPL TSLA` | Favourite tickers (must already be in watchlist) |
+| `/fav` | View current favourites |
+| `/unfav AAPL` | Remove tickers from favourites |
 | `/interval` | View or change batch report frequency |
 | `/priority` | View or change priority alert frequency |
 | `/config` | Show all current settings |
@@ -176,7 +198,7 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "ema50":       { "window_days": 50 },
     "ema":         { "window_days": 200 },
     "bollinger":   { "window_days": 20, "std_dev": 2, "buffer_pct": 0.01 },
-    "rsi":         { "window_days": 14, "ma_window_days": 14 },
+    "rsi":         { "window_days": 14, "ma_window_days": 14, "oversold": 30, "overbought": 70 },
     "stochastic":  { "window_days": 14, "smooth_window": 3, "oversold": 20, "overbought": 80 }
   },
 
@@ -197,7 +219,7 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "minute_offset": 5,
     "valid_batch_intervals": [1, 2, 4],
     "valid_priority_intervals": [15, 30, 60],
-    "priority_min_signals": 3
+    "priority_min_signals": 2
   },
 
   "display": {
@@ -209,8 +231,8 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
 
   "llm": {
     "model": "perplexity/sonar-pro",
-    "max_tokens": 80,
-    "detailed_max_tokens": 120,
+    "max_tokens": 160,
+    "detailed_max_tokens": 220,
     "portfolio_max_tokens": 1000
   }
 }
@@ -236,23 +258,23 @@ Rules run after indicators compute. All rules must pass for a priority alert to 
 
 ## Indicator reference
 
-A priority alert fires when at least 3 of 5 indicators agree on direction and the price structure rule passes.
+A priority alert fires when at least 2 of the 3 mean-reversion indicators agree on direction (trigger score ≥ +2 or ≤ −2) and the price structure rule passes.
 
-### 50 EMA
+### 50 EMA (context, not scored)
 
 Tracks the medium-term trend (~10 weeks). Price above the 50 EMA means the stock has been climbing recently. Reacts faster than the 200 EMA and is useful for catching trend changes earlier.
 
-### 200 EMA
+### 200 EMA (context, not scored)
 
-Tracks the long-term trend (~40 weeks). Price above the 200 EMA means the stock is in a long-term uptrend. Most institutional traders treat this as a hard filter — they won't buy a stock below its 200 EMA.
+Tracks the long-term trend (~40 weeks). Price above the 200 EMA means the stock is in a long-term uptrend. The 50/200 relation is shown as golden cross (50 above 200, bullish regime) or death cross (bearish regime). A downtrend raises the bar for buying a dip — the AI summary treats it as falling-knife risk.
 
 ### Bollinger Bands
 
 Places upper and lower bands 2 standard deviations from a 20-day moving average. Price near the lower band means the stock is cheap relative to recent volatility (mean reversion buy). Near the upper band means it's extended (mean reversion sell). A 1% buffer reduces noise at the edges.
 
-### RSI + RSI MA
+### RSI
 
-RSI measures the speed of recent price moves on a 0–100 scale. Rather than using fixed levels (70/30), this compares RSI to its own 14-day moving average. When RSI rises above its MA, momentum is accelerating. When it falls below, momentum is fading. This reacts faster than fixed thresholds.
+RSI measures the speed of recent price moves on a 0–100 scale. Below 30 = oversold (buy vote), above 70 = overbought (sell vote). Whether RSI is rising or falling relative to its own 14-day moving average is shown in brackets as momentum context but does not vote.
 
 ### Stochastic(14, 3)
 

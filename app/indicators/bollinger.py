@@ -1,7 +1,9 @@
+import math
+
 import pandas as pd
 from ta.volatility import BollingerBands
 
-from app.indicators.base import BaseIndicator, SignalResult
+from app.indicators.base import BaseIndicator, SignalResult, insufficient
 from app.indicators.engine import register
 
 
@@ -21,6 +23,8 @@ class BollingerBandsIndicator(BaseIndicator):
         price = float(close.iloc[-1])
         upper = float(bb.bollinger_hband().iloc[-1])
         lower = float(bb.bollinger_lband().iloc[-1])
+        if math.isnan(upper) or math.isnan(lower):
+            return insufficient()
         if price <= lower * (1 + buffer):
             return SignalResult(signal=1, display=f"oversold  near lower band ${lower:.2f}")
         if price >= upper * (1 - buffer):

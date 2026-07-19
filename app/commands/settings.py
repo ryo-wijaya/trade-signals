@@ -1,7 +1,7 @@
 import logging
 from app.commands.registry import command
 from app.config import (
-    load_watchlist, load_interval, load_priority_interval,
+    load_watchlist, load_favourites, load_interval, load_priority_interval,
     load_valid_intervals, load_valid_priority_intervals, load_config,
 )
 from app.telegram import send
@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 @command("config", description="show all current settings")
 async def handle_config(args: list[str], chat_id: str) -> None:
     tickers = load_watchlist()
+    favourites = load_favourites()
     interval = load_interval()
     priority = load_priority_interval()
     cfg = load_config()
@@ -30,13 +31,16 @@ async def handle_config(args: list[str], chat_id: str) -> None:
     else:
         batch_schedule = f"Every {interval}h · Mon–Fri {open_fmt}–{close_fmt}"
 
-    log.info("config queried: watchlist=%s interval=%sh priority=%smin", tickers, interval, priority)
+    batch_scope = f"Favourites only ({len(favourites)} tickers)" if favourites else f"Full watchlist ({len(tickers)} tickers, no favourites set)"
+
+    log.info("config queried: watchlist=%s favourites=%s interval=%sh priority=%smin", tickers, favourites, interval, priority)
     body = "\n".join(f"  {t}" for t in tickers)
     await send(
         f"<b>Config</b>\n\n"
         f"<b>Watchlist ({len(tickers)} tickers)</b>\n{body}\n\n"
         f"<b>Batch Report</b>  (with LLM summaries)\n"
         f"  {batch_schedule}\n"
+        f"  Scope: {batch_scope}\n"
         f"  Change: {valid_intervals}\n\n"
         f"<b>Priority Alert</b>\n"
         f"  Every {priority}min · Mon–Fri {open_fmt}–{close_fmt}\n"

@@ -1,7 +1,9 @@
+import math
+
 import pandas as pd
 from ta.momentum import StochasticOscillator
 
-from app.indicators.base import BaseIndicator, SignalResult
+from app.indicators.base import BaseIndicator, SignalResult, insufficient
 from app.indicators.engine import register
 
 
@@ -26,6 +28,8 @@ class Stochastic(BaseIndicator):
             fillna=False,
         ).stoch()
         k_val = float(k.iloc[-1])
+        if math.isnan(k_val):
+            return insufficient()
 
         if k_val < oversold:
             return SignalResult(signal=1, display=f"oversold  %K {k_val:.1f}")

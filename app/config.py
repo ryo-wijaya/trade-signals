@@ -3,8 +3,8 @@ import os
 import shutil
 from pathlib import Path
 
-# Keys written by the user via Telegram commands — preserved across deploys.
-_USER_KEYS = {"watchlist", "interval_hours", "priority_interval_minutes"}
+# Keys written by the user via Telegram commands, preserved across deploys.
+_USER_KEYS = {"watchlist", "favourites", "interval_hours", "priority_interval_minutes"}
 
 _CONFIG_DIR = os.getenv("CONFIG_DIR")
 if _CONFIG_DIR:
@@ -35,20 +35,22 @@ else:
 
 _DEFAULTS = {
     "watchlist": [],
+    "favourites": [],
     "interval_hours": 2,
     "priority_interval_minutes": 30,
     "indicators": {
+        "ema50": {"window_days": 50},
         "ema": {"window_days": 200},
         "bollinger": {"window_days": 20, "std_dev": 2, "buffer_pct": 0.01},
-        "rsi": {"window_days": 14, "ma_window_days": 14},
-        "cmf": {"window_days": 20, "threshold": 0.05},
+        "rsi": {"window_days": 14, "ma_window_days": 14, "oversold": 30, "overbought": 70},
+        "stochastic": {"window_days": 14, "smooth_window": 3, "oversold": 20, "overbought": 80},
     },
     "data": {
         "history_period": "400d",
-        "bar_interval": "1h",
+        "bar_interval": "1d",
         "rth_start": "09:30",
         "rth_end": "16:00",
-        "resample": "2h",
+        "resample": "1d",
         "fetch_retries": 3,
         "ticker_sleep_seconds": 0.5,
     },
@@ -59,6 +61,7 @@ _DEFAULTS = {
         "minute_offset": 5,
         "valid_batch_intervals": [1, 2, 4],
         "valid_priority_intervals": [15, 30, 60],
+        "priority_min_signals": 2,
     },
     "display": {
         "timezone": "Asia/Singapore",
@@ -66,6 +69,12 @@ _DEFAULTS = {
     },
     "market": {
         "calendar": "NYSE",
+    },
+    "llm": {
+        "model": "perplexity/sonar-pro",
+        "max_tokens": 160,
+        "detailed_max_tokens": 220,
+        "portfolio_max_tokens": 1000,
     },
 }
 
@@ -94,6 +103,17 @@ def load_watchlist() -> list[str]:
 def save_watchlist(tickers: list[str]) -> None:
     data = _load()
     data["watchlist"] = tickers
+    data["favourites"] = [t for t in data.get("favourites", []) if t in tickers]
+    _save(data)
+
+
+def load_favourites() -> list[str]:
+    return _load().get("favourites", [])
+
+
+def save_favourites(tickers: list[str]) -> None:
+    data = _load()
+    data["favourites"] = tickers
     _save(data)
 
 

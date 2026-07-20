@@ -11,11 +11,11 @@
 
 Three background jobs run automatically:
 
-- **Batch report** — sends a full summary with LLM summaries for every ticker once daily after market close (4:05pm ET by default). Mon–Fri only.
+- **Morning report** — every trading day, 30 minutes after the open (10:00am ET fixed): detailed signals, a fuller AI fundamental summary, and a news digest, for your **favourites only**. This is the one automatic report and is not manually triggerable — it always runs, on its own schedule, with no `/interval`-style knob. For an on-demand version any time, use `/signalsplus` (any scope) or `/news`.
 - **Priority alert** — runs every 30 minutes during market hours. Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought AND the side's confirmation passes: bounce structure for buys, above-average volume for sells (gates are asymmetric — backtesting showed each gate only helps its own side). Max one alert per stock per direction per day. Mon–Fri only.
 - **Earnings calendar** — sends next earnings dates for all watchlist tickers every Saturday midnight SGT.
 
-Batch report and priority alert intervals are configurable at runtime without restarting.
+Priority alert interval is configurable at runtime via `/priority`. The morning report time is fixed (`scheduler.morning_report_hour`/`morning_report_minute` in `config.json`) since there's no meaningful "interval" for a once-a-day report — an earlier version tried to expose a batch-report interval via `/interval`, but since the app moved to daily bars that interval was silently ignored by the scheduler (it always fired once at market close regardless of what you set). `/interval` has been removed rather than left dangling.
 
 The strategy is mean reversion: buy oversold, sell overbought. Three indicators vote on the trigger score; the two EMAs describe the trend regime and are shown as context but do not vote — otherwise a dip to oversold would always be cancelled by downtrend votes and every rating would read Hold.
 
@@ -42,7 +42,7 @@ MACD was deliberately not added: it is another trend-following momentum vote, an
 
 **Signal line**: every stock message and alert ends with a plain-English state derived from the backtest findings — `BUY/SELL ENTRY` when a ±2 trigger has its side's confirmation (act on it, 10–20 trading day swing horizon), `setup` when the trigger fired but confirmation is missing (watch, don't enter), or `none` when there's no edge. Only the rule relevant to the current side is shown in the report.
 
-**AI summary** (`/signalsplus`, batch report, `/portfolioanalysis`): the LLM receives all indicator readings, the trend regime, and the signal state, and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), framed as multi-week swing decisions, with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
+**AI summary** (`/signalsplus`, the morning report, `/portfolioanalysis`): the LLM receives all indicator readings, the trend regime, and the signal state, and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), framed as multi-week swing decisions, with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
 
 Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
 
@@ -77,7 +77,7 @@ TELEGRAM_BOT_TOKEN=your_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 TELEGRAM_ALLOWED_CHAT_IDS=your_chat_id_here   # comma-separated; only these can run bot commands
 TRADE_SIGNALS_API_KEY=a_long_random_secret    # required to call the REST API; omit to disable auth in dev
-OPENROUTER_API_KEY=your_openrouter_key        # required for /signalsplus; omit to disable LLM summaries
+OPENROUTER_API_KEY=your_openrouter_key        # required for /signalsplus, /portfolioanalysis, /news, and the morning report; omit to disable all LLM features
 ```
 
 **4. Run**
@@ -124,7 +124,7 @@ Generate a random `TRADE_SIGNALS_API_KEY` with: `openssl rand -hex 32`
 fly deploy
 ```
 
-On first boot the app copies `config.json` from the image to the persistent volume at `/data/config.json`. All subsequent watchlist and interval changes made via Telegram are written there and survive redeploys.
+On first boot the app copies `config.json` from the image to the persistent volume at `/data/config.json`. All subsequent watchlist and priority-interval changes made via Telegram are written there and survive redeploys.
 
 **Useful commands**
 
@@ -146,6 +146,7 @@ fly ssh console   # shell into the running container
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
 | `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks |
+| `/news` | Most important recent news for your favourites and their sectors — routine/noise items filtered out |
 | `/earnings` | Next earnings report dates for watchlist tickers (SGT) — also sent every Saturday midnight SGT |
 | `/watchlist` | View current watchlist (★ marks favourites) |
 | `/add AAPL TSLA` | Add tickers |
@@ -153,10 +154,11 @@ fly ssh console   # shell into the running container
 | `/fav AAPL TSLA` | Favourite tickers (must already be in watchlist) |
 | `/fav` | View current favourites |
 | `/unfav AAPL` | Remove tickers from favourites |
-| `/interval` | View or change batch report frequency |
 | `/priority` | View or change priority alert frequency |
 | `/config` | Show all current settings |
 | `/help` | Show all commands |
+
+The morning report (favourites, detailed AI summary + news) has no manual-trigger command by design — it only runs on its fixed daily schedule.
 
 Plain symbols default to US listings. For other exchanges use Yahoo Finance's suffix (e.g. `9988.HK`, `VOD.L`, `BMW.DE`).
 
@@ -170,9 +172,6 @@ All endpoints require the `X-API-Key` header when `TRADE_SIGNALS_API_KEY` is set
 GET  /api/config/watchlist
 POST /api/config/watchlist          {"add": ["GOOG"], "remove": ["AMZN"]}
 POST /api/config/watchlist          {"replace": ["AAPL", "TSLA"]}
-
-GET  /api/config/interval
-POST /api/config/interval           {"interval_hours": 1}
 
 GET  /api/config/priority-interval
 POST /api/config/priority-interval  {"priority_interval_minutes": 15}
@@ -188,12 +187,11 @@ Interactive docs at `http://localhost:8000/docs`.
 
 ## Configuration reference
 
-All settings live in `config.json`. Watchlist and interval changes take effect immediately. Indicator parameters and scheduler settings require a restart. Change as you see fit. Most are staticly configured, but some can be modified via telegram commands, e.g. intervals. Example config:
+All settings live in `config.json`. Watchlist and priority-interval changes take effect immediately. Indicator parameters and scheduler settings require a restart. Change as you see fit. Most are staticly configured, but some can be modified via telegram commands, e.g. the priority interval. Example config:
 
 ```json
 {
   "watchlist": ["AMZN", "BABA", "MSFT", "NVDA"],
-  "interval_hours": 2,
   "priority_interval_minutes": 30,
 
   "indicators": {
@@ -223,7 +221,8 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "rth_open_hour": 10,
     "rth_close_hour": 16,
     "minute_offset": 5,
-    "valid_batch_intervals": [1, 2, 4],
+    "morning_report_hour": 10,
+    "morning_report_minute": 0,
     "valid_priority_intervals": [15, 30, 60],
     "priority_min_signals": 2
   },
@@ -239,7 +238,8 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
     "model": "perplexity/sonar-pro",
     "max_tokens": 160,
     "detailed_max_tokens": 220,
-    "portfolio_max_tokens": 1000
+    "portfolio_max_tokens": 1000,
+    "news_max_tokens": 700
   }
 }
 ```
@@ -252,7 +252,7 @@ All settings live in `config.json`. Watchlist and interval changes take effect i
 
 ## Adding a rule
 
-Rules run after indicators compute. All rules must pass for a priority alert to fire. Rule status is shown in every report.
+Rules run after indicators compute. All applicable rules must pass for a priority alert to fire — a rule can opt out for the current side by returning `passed=True, reason=""`, which also hides it from the report. Rule status is shown in every report.
 
 1. Create `app/rules/your_rule.py`
 2. Add one import to `app/rules/__init__.py`
@@ -264,7 +264,7 @@ Rules run after indicators compute. All rules must pass for a priority alert to 
 
 ## Indicator reference
 
-A priority alert fires when at least 2 of the 3 mean-reversion indicators agree on direction (trigger score ≥ +2 or ≤ −2) and the price structure rule passes.
+A priority alert fires when at least 2 of the 3 mean-reversion indicators agree on direction (trigger score ≥ +2 or ≤ −2) AND the side's confirmation rule passes — bounce structure for buys, above-average volume for sells (see Rules reference below).
 
 ### 50 EMA (context, not scored)
 
@@ -286,6 +286,10 @@ RSI measures the speed of recent price moves on a 0–100 scale. Below 30 = over
 
 Measures where today's close sits within the high-low range of the last 14 days. %K below 20 means the stock is near the bottom of its recent range (oversold, mean reversion buy). %K above 80 means it's near the top (overbought, mean reversion sell). Complements Bollinger — Bollinger uses standard deviation of closes, Stochastic uses the actual price range.
 
+## Rules reference
+
+Rules gate priority alerts only — they never affect the batch score or rating shown in every report. Each rule decides for itself whether it applies to the current side; when it doesn't, it passes automatically and is hidden from the report (only the applicable rule is ever shown).
+
 ### Price structure confirmation (buys only)
 
 Buy alerts require a two-bar price structure: the current bar must close above the previous close AND its low must be above the previous bar's low — proof the bounce has started. Backtested, structure-confirmed buys averaged +4.7% over 20 days vs +2.0% unfiltered. It is NOT applied to sells: gating sells on structure erased their edge (+0.18% vs −1.56% unfiltered at 20d).
@@ -293,6 +297,10 @@ Buy alerts require a two-bar price structure: the current bar must close above t
 ### Volume confirmation (sells only)
 
 Sell alerts require the current bar's volume at or above its 20-day average (`rules.volume_confirmation.min_ratio`, default 1.0) — overbought plus heavy volume means real distribution. Backtested, volume-confirmed sells averaged −2.65% over 20 days vs −1.56% unfiltered (n=277). It is NOT applied to buys: it diluted structure-confirmed buys (+3.0% vs +4.7% at 20d).
+
+## News module
+
+`/news` and the morning report both call `app.llm.get_news_digest(tickers)` (same engine, one shared implementation) with your favourites list. The prompt instructs the model to search for news on those tickers and their sectors, but only report items that could materially move the price — earnings surprises, guidance changes, M&A, regulatory/legal action, major executive changes, product launches or recalls, credit rating changes, or macro/sector events (Fed decisions, tariffs, major competitor moves). Routine analyst price-target tweaks, generic "stock moved X%" recaps, and opinion pieces are explicitly excluded, and the model is told to omit a ticker entirely rather than pad the digest with non-material news. Configurable via `llm.news_max_tokens` (default 700).
 
 ## Backtesting
 

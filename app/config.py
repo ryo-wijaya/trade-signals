@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 # Keys written by the user via Telegram commands, preserved across deploys.
-_USER_KEYS = {"watchlist", "favourites", "interval_hours", "priority_interval_minutes"}
+_USER_KEYS = {"watchlist", "favourites", "priority_interval_minutes"}
 
 _CONFIG_DIR = os.getenv("CONFIG_DIR")
 if _CONFIG_DIR:
@@ -36,7 +36,6 @@ else:
 _DEFAULTS = {
     "watchlist": [],
     "favourites": [],
-    "interval_hours": 2,
     "priority_interval_minutes": 30,
     "indicators": {
         "ema50": {"window_days": 50},
@@ -62,7 +61,8 @@ _DEFAULTS = {
         "rth_open_hour": 10,
         "rth_close_hour": 16,
         "minute_offset": 5,
-        "valid_batch_intervals": [1, 2, 4],
+        "morning_report_hour": 10,
+        "morning_report_minute": 0,
         "valid_priority_intervals": [15, 30, 60],
         "priority_min_signals": 2,
     },
@@ -78,6 +78,7 @@ _DEFAULTS = {
         "max_tokens": 160,
         "detailed_max_tokens": 220,
         "portfolio_max_tokens": 1000,
+        "news_max_tokens": 700,
     },
 }
 
@@ -120,16 +121,6 @@ def save_favourites(tickers: list[str]) -> None:
     _save(data)
 
 
-def load_interval() -> int:
-    return _load().get("interval_hours", 2)
-
-
-def save_interval(hours: int) -> None:
-    data = _load()
-    data["interval_hours"] = hours
-    _save(data)
-
-
 def load_priority_interval() -> int:
     return _load().get("priority_interval_minutes", 30)
 
@@ -138,10 +129,6 @@ def save_priority_interval(minutes: int) -> None:
     data = _load()
     data["priority_interval_minutes"] = minutes
     _save(data)
-
-
-def load_valid_intervals() -> list[int]:
-    return _load().get("scheduler", {}).get("valid_batch_intervals", [1, 2, 4])
 
 
 def load_valid_priority_intervals() -> list[int]:

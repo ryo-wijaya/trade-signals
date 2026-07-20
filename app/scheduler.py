@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 from datetime import datetime
 import pytz
@@ -6,7 +7,7 @@ import pytz
 log = logging.getLogger(__name__)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from app.config import load_watchlist, load_interval, save_interval, load_priority_interval, save_priority_interval
+from app.config import load_watchlist, load_favourites, load_priority_interval, save_priority_interval
 from app.indicators import analyze_tickers, IndicatorResult
 from app.market_calendar import is_trading_day
 from app.telegram import build_stock_messages, build_priority_alert, send, now_sgt
@@ -23,20 +24,11 @@ def _tz() -> pytz.BaseTzInfo:
     return pytz.timezone(_scfg().get("exchange_timezone", "America/New_York"))
 
 
-def _is_daily() -> bool:
-    from app.config import load_config
-    return load_config().get("data", {}).get("resample", "2h").endswith("d")
-
-
-def _batch_trigger(interval_hours: int) -> CronTrigger:
+def _morning_trigger() -> CronTrigger:
     cfg = _scfg()
-    close_h = cfg.get("rth_close_hour", 16)
-    offset = cfg.get("minute_offset", 5)
-    if _is_daily():
-        return CronTrigger(day_of_week="mon-fri", hour=close_h, minute=offset, timezone=_tz())
-    open_h = cfg.get("rth_open_hour", 10)
-    hours = ",".join(str(h) for h in range(open_h, close_h + 1, interval_hours))
-    return CronTrigger(day_of_week="mon-fri", hour=hours, minute=offset, timezone=_tz())
+    hour = cfg.get("morning_report_hour", 10)
+    minute = cfg.get("morning_report_minute", 0)
+    return CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone=_tz())
 
 
 def _priority_trigger(interval_minutes: int) -> CronTrigger:
@@ -66,31 +58,38 @@ def _run(loop_fn):
         loop.close()
 
 
-def run_analysis() -> None:
+def run_morning_report() -> None:
+    """Fixed daily report 30 min after the open: detailed signals + AI summary
+    + a news digest, for favourites only. Not manually triggerable — /signalsplus
+    remains the on-demand equivalent for watchlist/favourites/specific tickers."""
     if not is_trading_day(datetime.now(_tz()).date()):
-        log.info("market_analysis skipped: non-trading day")
+        log.info("morning_report skipped: non-trading day")
         return
-    log.info("market_analysis started")
+    log.info("morning_report started")
 
     async def _send():
-        from app.llm import get_summary
-        from app.config import load_favourites
-        favourites = load_favourites()
-        targets = favourites or load_watchlist()
-        title = "Favourites Report" if favourites else "Market Report"
+        from app.llm import get_summary, get_news_digest
+        targets = load_favourites()
+        if not targets:
+            log.info("morning_report skipped: no favourites set")
+            return
         loop = asyncio.get_running_loop()
         results, _ = await loop.run_in_executor(None, lambda: analyze_tickers(targets))
-        log.info("market_analysis complete: %d tickers", len(results))
+        log.info("morning_report analysis complete: %d tickers", len(results))
         if not results:
             return
         summaries = {}
-        settled = await asyncio.gather(*[get_summary(r) for r in results], return_exceptions=True)
+        settled = await asyncio.gather(*[get_summary(r, detailed=True) for r in results], return_exceptions=True)
         for r, outcome in zip(results, settled):
             if isinstance(outcome, str) and outcome:
                 summaries[r.ticker] = outcome
-        for msg in build_stock_messages(results, now_sgt(), title=title, summaries=summaries):
+        for msg in build_stock_messages(results, now_sgt(), title="Morning Report", summaries=summaries):
             await send(msg)
             await asyncio.sleep(0.3)
+
+        news = await get_news_digest(targets)
+        if news:
+            await send(f"<b>News</b>\n{html.escape(news)}")
 
     _run(_send)
 
@@ -141,12 +140,6 @@ def run_priority_check() -> None:
         log.info("priority_check: no alerts")
 
 
-def reschedule(interval_hours: int) -> None:
-    save_interval(interval_hours)
-    if _scheduler:
-        _scheduler.reschedule_job("market_analysis", trigger=_batch_trigger(interval_hours))
-
-
 def reschedule_priority(interval_minutes: int) -> None:
     save_priority_interval(interval_minutes)
     if _scheduler:
@@ -156,7 +149,7 @@ def reschedule_priority(interval_minutes: int) -> None:
 def create_scheduler() -> BackgroundScheduler:
     global _scheduler
     _scheduler = BackgroundScheduler(timezone=_tz())
-    _scheduler.add_job(run_analysis, _batch_trigger(load_interval()), id="market_analysis")
+    _scheduler.add_job(run_morning_report, _morning_trigger(), id="morning_report")
     _scheduler.add_job(run_priority_check, _priority_trigger(load_priority_interval()), id="priority_check")
     _scheduler.add_job(
         run_earnings_report,

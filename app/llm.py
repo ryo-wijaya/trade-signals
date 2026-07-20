@@ -117,6 +117,43 @@ async def openrouter_chat(prompt: str, max_tokens: int, timeout: float = 30) -> 
     return ""
 
 
+def build_news_prompt(tickers: list[str]) -> str:
+    joined = ", ".join(tickers)
+    return (
+        f"Search for the most important recent news for these stocks and their sectors: {joined}.\n\n"
+        "Only include items that could materially move the price: earnings surprises or "
+        "guidance changes, M&A, regulatory or legal action, major executive changes, major "
+        "product launches or recalls, credit rating changes, or macro/sector events (Fed "
+        "decisions, tariffs, major competitor moves) affecting multiple of these tickers. "
+        'Exclude routine analyst price-target tweaks, generic "stock moved X%" recaps, and '
+        "opinion pieces.\n\n"
+        "Group by ticker; use a \"Sector/Macro\" section for anything spanning multiple "
+        "tickers. One line per item: ticker or theme, then a single sentence, then the date "
+        "if known. If a ticker has nothing material this week, omit it entirely — do not pad "
+        "with routine news to fill space.\n"
+        "Plain text only. No markdown, no bullets, no citation numbers."
+    )
+
+
+async def get_news_digest(tickers: list[str]) -> str:
+    if not os.getenv("OPENROUTER_API_KEY", ""):
+        log.debug("OPENROUTER_API_KEY not set — skipping news digest")
+        return ""
+
+    from app.config import load_config
+    max_tokens = load_config().get("llm", {}).get("news_max_tokens", 700)
+
+    log.info("news digest requested for %s", tickers)
+    try:
+        digest = await openrouter_chat(build_news_prompt(tickers), max_tokens, timeout=45)
+        if digest:
+            log.info("news digest complete (%d chars)", len(digest))
+        return digest
+    except Exception as exc:
+        log.error("get_news_digest failed: %s", exc)
+        return ""
+
+
 async def get_summary(r: IndicatorResult, detailed: bool = False) -> str:
     if not os.getenv("OPENROUTER_API_KEY", ""):
         log.debug("OPENROUTER_API_KEY not set — skipping LLM summary for %s", r.ticker)

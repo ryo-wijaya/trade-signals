@@ -1,8 +1,8 @@
 import logging
 from app.commands.registry import command
 from app.config import (
-    load_watchlist, load_favourites, load_interval, load_priority_interval,
-    load_valid_intervals, load_valid_priority_intervals, load_config,
+    load_watchlist, load_favourites, load_priority_interval,
+    load_valid_priority_intervals, load_config,
 )
 from app.telegram import send
 
@@ -13,35 +13,28 @@ log = logging.getLogger(__name__)
 async def handle_config(args: list[str], chat_id: str) -> None:
     tickers = load_watchlist()
     favourites = load_favourites()
-    interval = load_interval()
     priority = load_priority_interval()
     cfg = load_config()
     scfg = cfg.get("scheduler", {})
-    is_daily = cfg.get("data", {}).get("resample", "2h").endswith("d")
     close_h = scfg.get("rth_close_hour", 16)
     open_h = scfg.get("rth_open_hour", 10)
     offset = scfg.get("minute_offset", 5)
+    morning_h = scfg.get("morning_report_hour", 10)
+    morning_m = scfg.get("morning_report_minute", 0)
     close_fmt = f"{close_h % 12 or 12}:{offset:02d}{'am' if close_h < 12 else 'pm'} ET"
     open_fmt = f"{open_h % 12 or 12}:{offset:02d}{'am' if open_h < 12 else 'pm'} ET"
-    valid_intervals = "  ".join(f"/interval {v}" for v in load_valid_intervals())
+    morning_fmt = f"{morning_h % 12 or 12}:{morning_m:02d}{'am' if morning_h < 12 else 'pm'} ET"
     valid_priorities = "  ".join(f"/priority {v}" for v in load_valid_priority_intervals())
 
-    if is_daily:
-        batch_schedule = f"Every {interval}h · fires once at {close_fmt} Mon–Fri  (daily bars)"
-    else:
-        batch_schedule = f"Every {interval}h · Mon–Fri {open_fmt}–{close_fmt}"
-
-    batch_scope = f"Favourites only ({len(favourites)} tickers)" if favourites else f"Full watchlist ({len(tickers)} tickers, no favourites set)"
-
-    log.info("config queried: watchlist=%s favourites=%s interval=%sh priority=%smin", tickers, favourites, interval, priority)
+    log.info("config queried: watchlist=%s favourites=%s priority=%smin", tickers, favourites, priority)
     body = "\n".join(f"  {t}" for t in tickers)
     await send(
         f"<b>Config</b>\n\n"
         f"<b>Watchlist ({len(tickers)} tickers)</b>\n{body}\n\n"
-        f"<b>Batch Report</b>  (with LLM summaries)\n"
-        f"  {batch_schedule}\n"
-        f"  Scope: {batch_scope}\n"
-        f"  Change: {valid_intervals}\n\n"
+        f"<b>Morning Report</b>  (detailed AI summary + news)\n"
+        f"  Daily {morning_fmt} Mon–Fri\n"
+        f"  Scope: favourites only ({len(favourites)} tickers)\n"
+        f"  Not manually triggerable — use /signalsplus or /news on demand\n\n"
         f"<b>Priority Alert</b>\n"
         f"  Every {priority}min · Mon–Fri {open_fmt}–{close_fmt}\n"
         f"  Change: {valid_priorities}\n\n"
@@ -49,36 +42,6 @@ async def handle_config(args: list[str], chat_id: str) -> None:
         f"  Weekly · Saturday midnight SGT",
         chat_id=chat_id,
     )
-
-
-@command("interval", description="view or change the batch report frequency")
-async def handle_interval(args: list[str], chat_id: str) -> None:
-    from app.scheduler import reschedule
-
-    if not args:
-        current = load_interval()
-        log.info("interval queried: %sh", current)
-        valid = load_valid_intervals()
-        await send(
-            f"Batch report frequency: every {current}h\n"
-            f"Change with: {' '.join(f'/interval {v}' for v in valid)}",
-            chat_id=chat_id,
-        )
-        return
-
-    try:
-        hours = int(args[0])
-    except ValueError:
-        await send(f"Usage: /interval 1  (valid: {load_valid_intervals()})", chat_id=chat_id)
-        return
-
-    if hours not in load_valid_intervals():
-        await send(f"Invalid interval. Choose from: {load_valid_intervals()}", chat_id=chat_id)
-        return
-
-    reschedule(hours)
-    log.info("interval changed to %sh", hours)
-    await send(f"Batch report frequency set to every {hours}h.", chat_id=chat_id)
 
 
 @command("priority", description="view or change the priority alert check frequency")

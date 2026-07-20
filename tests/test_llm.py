@@ -1,6 +1,6 @@
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
-from app.llm import build_prompt, trim_incomplete, clean_response
+from app.llm import build_prompt, build_news_prompt, trim_incomplete, clean_response
 from app.commands.portfolio_analysis import _build_prompt as build_portfolio_prompt
 
 
@@ -65,6 +65,25 @@ class TestCleanResponse:
     def test_strips_citations_markdown_and_headers(self):
         raw = "## Verdict\n**BUY** — *strong* quarter[1][2]."
         assert clean_response(raw) == "Verdict\nBUY — strong quarter."
+
+
+class TestBuildNewsPrompt:
+    def test_includes_all_tickers(self):
+        prompt = build_news_prompt(["AMZN", "META", "NVO"])
+        assert "AMZN, META, NVO" in prompt
+
+    def test_asks_for_materiality_filter(self):
+        prompt = build_news_prompt(["AMZN"])
+        assert "materially move the price" in prompt
+        assert "Exclude routine analyst price-target tweaks" in prompt
+
+    def test_instructs_omission_over_padding(self):
+        prompt = build_news_prompt(["AMZN"])
+        assert "do not pad" in prompt
+        assert "omit it entirely" in prompt
+
+    def test_asks_for_sector_macro_grouping(self):
+        assert "Sector/Macro" in build_news_prompt(["AMZN", "META"])
 
 
 class TestPortfolioPrompt:

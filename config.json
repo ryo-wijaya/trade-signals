@@ -1,7 +1,6 @@
 {
   "watchlist": ["ACN", "AMZN", "BABA", "CRM", "IBIT", "META", "MRSH", "MSFT", "NFLX", "NVDA", "NVO", "PFE", "RDDT", "RXRX"],
   "favourites": ["AMZN", "BABA", "CRM", "META", "MRSH", "MSFT", "NVO", "RDDT"],
-  "interval_hours": 2,
   "priority_interval_minutes": 30,
   "indicators": {
     "ema50": {
@@ -48,7 +47,8 @@
     "rth_open_hour": 10,
     "rth_close_hour": 16,
     "minute_offset": 5,
-    "valid_batch_intervals": [1, 2, 4],
+    "morning_report_hour": 10,
+    "morning_report_minute": 0,
     "valid_priority_intervals": [15, 30, 60],
     "priority_min_signals": 2
   },
@@ -63,7 +63,8 @@
     "model": "perplexity/sonar-pro",
     "max_tokens": 160,
     "detailed_max_tokens": 220,
-    "portfolio_max_tokens": 1000
+    "portfolio_max_tokens": 1000,
+    "news_max_tokens": 700
   },
 
   "explanations": [
@@ -102,6 +103,14 @@
     {
       "name": "Priority Alert",
       "text": "Fires when at least 2 of the 3 mean-reversion indicators agree (trigger score >= +2 or <= -2) AND the side's confirmation passes: bounce structure for buys, above-average volume for sells. One alert per stock per direction per day. Edge shows over 10-20 trading days — treat as multi-week swing entries."
+    },
+    {
+      "name": "Morning Report",
+      "text": "Every trading day, 30 minutes after the open (10:00am ET): detailed signals, a fuller AI fundamental summary, and a news digest — for your favourites only. This is the one fully automatic report and cannot be triggered manually; use /signalsplus or /news any time for the same content on demand."
+    },
+    {
+      "name": "News",
+      "text": "/news searches for material news on your favourites and their sectors — earnings surprises, M&A, regulatory action, major guidance or executive changes, macro events hitting the sector. Routine analyst-target tweaks and generic recaps are filtered out; if nothing material happened, that ticker is simply omitted."
     }
   ]
 }

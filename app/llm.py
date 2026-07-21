@@ -168,6 +168,7 @@ def build_leaps_prompt(scan) -> str:
     import itertools
     from app.telegram import _call
     from app.fundamentals import format_pe
+    from app.options.chain import days_to_months
 
     lines = [f"{scan.ticker} LEAPS scan: spot ${scan.spot:.2f}."
              f"{f' 90-day realized volatility {scan.hv:.0%}.' if scan.hv else ''}"]
@@ -181,7 +182,7 @@ def build_leaps_prompt(scan) -> str:
                       "expirations from 1-2yr out are shown so you can weigh price/IV against how "
                       "much time is being bought.")
         for (expiration, dte), group in itertools.groupby(scan.candidates, key=lambda c: (c.expiration, c.dte)):
-            lines.append(f"Expiration {expiration} ({dte}d out):")
+            lines.append(f"Expiration {expiration} ({days_to_months(dte)}mo out):")
             for c in group:
                 iv_hv_str = f"{c.iv_hv:.2f} ({c.iv_hv_label})" if c.iv_hv is not None else "unknown"
                 lines.append(f"  ${c.strike:g}C mid ${c.mid:.2f} IV {c.iv:.0%} delta {c.delta:.2f} "

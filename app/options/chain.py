@@ -8,6 +8,12 @@ import yfinance as yf
 log = logging.getLogger(__name__)
 
 
+def days_to_months(days: int) -> int:
+    """Whole-number months for display — LEAPS timing is more naturally read
+    as "14mo out" than "422d out"."""
+    return round(days / 30.44)
+
+
 def black_scholes_delta(
     spot: float, strike: float, dte_days: float, iv: float,
     r: float = 0.045, is_call: bool = True,

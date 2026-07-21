@@ -5,8 +5,20 @@ import pytest
 
 import app.options.chain as chain_mod
 from app.options.chain import (
-    black_scholes_delta, fetch_chain, pick_expiration, liquid_mask, put_call_ratio,
+    black_scholes_delta, fetch_chain, pick_expiration, liquid_mask, put_call_ratio, days_to_months,
 )
+
+
+class TestDaysToMonths:
+    def test_whole_year(self):
+        assert days_to_months(365) == 12
+
+    def test_two_years(self):
+        assert days_to_months(730) == 24
+
+    def test_rounds_to_nearest_whole_month(self):
+        assert days_to_months(330) == 11
+        assert days_to_months(513) == 17
 
 
 class TestBlackScholesDelta:

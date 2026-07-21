@@ -22,8 +22,12 @@ def iv_hv_ratio(iv: float, hv: float | None) -> float | None:
 def iv_hv_label(ratio: float | None) -> str:
     if ratio is None:
         return "unknown"
+    if ratio < 0.7:
+        return "very cheap"
     if ratio < 0.9:
         return "cheap"
     if ratio <= 1.3:
         return "fair"
-    return "rich"
+    if ratio <= 1.6:
+        return "rich"
+    return "very rich"

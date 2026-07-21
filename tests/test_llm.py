@@ -175,8 +175,8 @@ class TestBuildLeapsPrompt:
 
     def test_groups_candidates_by_expiration(self):
         prompt = build_leaps_prompt(self._scan())
-        assert "Expiration 2027-06-17 (330d out)" in prompt
-        assert "Expiration 2027-12-17 (513d out)" in prompt
+        assert "Expiration 2027-06-17 (11mo out)" in prompt
+        assert "Expiration 2027-12-17 (17mo out)" in prompt
 
     def test_verdict_first_trade_hold_no_trade_format(self):
         prompt = build_leaps_prompt(self._scan())

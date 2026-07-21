@@ -59,6 +59,14 @@ class TestRenderLeaps:
         # self-labeled line per candidate, now including breakeven.
         assert "$220C  $34.10  Δ0.57  fair  BE $254.10" in body
 
+    def test_be_legend_explains_the_abbreviation(self):
+        body = _render_leaps(_leaps_scan())
+        assert "BE = breakeven price" in body
+
+    def test_no_legend_when_no_candidates(self):
+        body = _render_leaps(_leaps_scan(candidates=[]))
+        assert "BE =" not in body
+
     def test_groups_candidates_by_expiration(self):
         from app.options.leaps import LeapsCandidate
         scan = _leaps_scan(candidates=[
@@ -70,8 +78,8 @@ class TestRenderLeaps:
                             open_interest=100, spread_pct=0.02),
         ])
         body = _render_leaps(scan)
-        assert "2027-06-17" in body and "(330d)" in body
-        assert "2027-12-17" in body and "(513d)" in body
+        assert "2027-06-17" in body and "(11mo)" in body
+        assert "2027-12-17" in body and "(17mo)" in body
 
     def test_no_candidates_uses_actual_configured_band(self):
         body = _render_leaps(_leaps_scan(candidates=[], delta_min=0.35, delta_max=0.70))

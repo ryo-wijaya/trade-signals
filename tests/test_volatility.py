@@ -43,6 +43,12 @@ class TestIvHvRatio:
 
 
 class TestIvHvLabel:
+    def test_very_cheap_below_point_seven(self):
+        assert iv_hv_label(0.69) == "very cheap"
+
+    def test_cheap_at_point_seven(self):
+        assert iv_hv_label(0.70) == "cheap"
+
     def test_cheap_below_point_nine(self):
         assert iv_hv_label(0.89) == "cheap"
 
@@ -54,6 +60,12 @@ class TestIvHvLabel:
 
     def test_rich_above_one_point_three(self):
         assert iv_hv_label(1.31) == "rich"
+
+    def test_rich_at_one_point_six(self):
+        assert iv_hv_label(1.60) == "rich"
+
+    def test_very_rich_above_one_point_six(self):
+        assert iv_hv_label(1.61) == "very rich"
 
     def test_unknown_when_none(self):
         assert iv_hv_label(None) == "unknown"

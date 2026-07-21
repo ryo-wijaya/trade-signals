@@ -9,6 +9,7 @@ from app.config import load_favourites, load_config
 from app.fundamentals import format_pe
 from app.llm import openrouter_chat, build_leaps_prompt, build_wheel_prompt
 from app.options import scan_leaps, scan_wheel
+from app.options.chain import days_to_months
 from app.telegram import send, now_sgt, _call
 
 log = logging.getLogger(__name__)
@@ -46,8 +47,9 @@ def _render_leaps(scan) -> str:
         lines.append(f"No call strikes met the delta ({scan.delta_min:.2f}-{scan.delta_max:.2f}) "
                       "and liquidity filters across the scanned expirations.")
     else:
+        lines.append("BE = breakeven price (strike + premium paid)")
         for (expiration, dte), group in itertools.groupby(scan.candidates, key=lambda c: (c.expiration, c.dte)):
-            lines.append(f"<b>{expiration}</b>  ({dte}d)")
+            lines.append(f"<b>{expiration}</b>  ({days_to_months(dte)}mo)")
             rows = [f"${c.strike:g}C  ${c.mid:.2f}  Δ{c.delta:.2f}  {c.iv_hv_label}  BE ${c.breakeven:.2f}"
                     for c in group]
             lines.append("<code>" + "\n".join(rows) + "</code>")

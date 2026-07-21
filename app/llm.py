@@ -154,6 +154,83 @@ async def get_news_digest(tickers: list[str]) -> str:
         return ""
 
 
+_OPTIONS_ASK = (
+    'Reply in exactly this format: "TRADE <strike>{opt} — reason" or "HOLD — reason" or '
+    '"NO TRADE — reason". It is fine and expected to say HOLD or NO TRADE when the numbers '
+    "don't support a good trade — do not force a TRADE recommendation just to have a pick. "
+    "reason is 1-2 sentences explaining the call. Weigh the IV/HV cheapness (or richness), the "
+    "technical/fundamental backdrop, and the earnings timing shown above. No hedging, no data "
+    "disclaimers, plain text only, no markdown, no citation numbers."
+)
+
+
+def build_leaps_prompt(scan) -> str:
+    import itertools
+    from app.telegram import _call
+    from app.fundamentals import format_pe
+
+    lines = [f"{scan.ticker} LEAPS scan: spot ${scan.spot:.2f}."
+             f"{f' 90-day realized volatility {scan.hv:.0%}.' if scan.hv else ''}"]
+    if not scan.candidates:
+        lines.append(f"No call strikes met the delta ({scan.delta_min:.2f}-{scan.delta_max:.2f}) "
+                      "and liquidity filters across the scanned expirations (1-2yr out).")
+    else:
+        lines.append("Candidates are pre-filtered to near-the-money strikes (highest gamma) and "
+                      "ranked nearest-to-spot first within each expiration, for a multi-month hold "
+                      "sold before expiration — not stock-replacement or far-OTM leverage. Multiple "
+                      "expirations from 1-2yr out are shown so you can weigh price/IV against how "
+                      "much time is being bought.")
+        for (expiration, dte), group in itertools.groupby(scan.candidates, key=lambda c: (c.expiration, c.dte)):
+            lines.append(f"Expiration {expiration} ({dte}d out):")
+            for c in group:
+                iv_hv_str = f"{c.iv_hv:.2f} ({c.iv_hv_label})" if c.iv_hv is not None else "unknown"
+                lines.append(f"  ${c.strike:g}C mid ${c.mid:.2f} IV {c.iv:.0%} delta {c.delta:.2f} "
+                              f"IV/HV {iv_hv_str} breakeven ${c.breakeven:.2f}")
+    if scan.indicator:
+        r = scan.indicator
+        lines.append(f"Technical/fundamental setup: {_call(r.score)} · {r.trend_label} · "
+                      f"P/E {format_pe(r.trailing_pe, r.forward_pe)}.")
+    if scan.put_call.get("volume_ratio") is not None:
+        lines.append(f"Put/call volume ratio (near-term): {scan.put_call['volume_ratio']:.2f}.")
+    if scan.next_earnings:
+        lines.append(f"Next earnings: {scan.next_earnings}.")
+
+    ask = _OPTIONS_ASK.format(opt="C")
+    return "\n".join(lines) + "\n\n" + ask
+
+
+def build_wheel_prompt(scan) -> str:
+    from app.telegram import _call
+    from app.fundamentals import format_pe
+
+    lines = [f"{scan.ticker} wheel (CSP) scan: spot ${scan.spot:.2f}, expiration {scan.expiration} "
+             f"({scan.dte}d out).{f' 90-day realized volatility {scan.hv:.0%}.' if scan.hv else ''}"]
+    if not scan.candidates:
+        lines.append(f"No put strikes met the delta ({scan.delta_min:.2f}-{scan.delta_max:.2f}) "
+                      "and liquidity filters at this expiration.")
+    for c in scan.candidates:
+        risk = "  ⚠ earnings falls before this expiration — IV includes event risk" if c.earnings_risk else ""
+        lines.append(
+            f"${c.strike:g}P mid ${c.mid:.2f} IV {c.iv:.0%} delta {c.delta:.2f} "
+            f"annualized yield {c.annualized_yield:.0%}{risk}"
+        )
+    if scan.indicator:
+        r = scan.indicator
+        lines.append(f"Technical/fundamental setup: {_call(r.score)} · {r.trend_label} · "
+                      f"P/E {format_pe(r.trailing_pe, r.forward_pe)}.")
+    if scan.put_call.get("volume_ratio") is not None:
+        lines.append(f"Put/call volume ratio (near-term): {scan.put_call['volume_ratio']:.2f}.")
+    if scan.next_earnings:
+        lines.append(f"Next earnings: {scan.next_earnings}.")
+    lines.append(
+        "A wheel CSP is assigned into the stock at the strike if it falls below it by expiration "
+        "— avoid recommending a strike on a stock you wouldn't want to own at that price."
+    )
+
+    ask = _OPTIONS_ASK.format(opt="P")
+    return "\n".join(lines) + "\n\n" + ask
+
+
 async def get_summary(r: IndicatorResult, detailed: bool = False) -> str:
     if not os.getenv("OPENROUTER_API_KEY", ""):
         log.debug("OPENROUTER_API_KEY not set — skipping LLM summary for %s", r.ticker)

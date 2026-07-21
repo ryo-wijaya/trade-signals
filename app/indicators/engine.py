@@ -25,6 +25,8 @@ class IndicatorResult:
     signals: list[tuple[str, str, SignalResult]]  # (name, label, result)
     rules_passed: bool = field(default=True)
     rule_results: list[tuple[str, bool, str]] = field(default_factory=list)  # (name, passed, reason)
+    trailing_pe: float | None = None
+    forward_pe: float | None = None
 
     @property
     def reversion_signals(self) -> list[tuple[str, str, SignalResult]]:
@@ -110,11 +112,16 @@ def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
 
 
 def analyze(ticker: str) -> IndicatorResult:
+    from app.fundamentals import get_pe
     df = _fetch_ohlcv(ticker)
     price = float(df["Close"].iloc[-1])
     prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else price
     signals = [(ind.name, ind.label, ind.compute(df)) for ind in _INDICATORS]
-    result = IndicatorResult(ticker=ticker, price=price, prev_close=prev_close, signals=signals)
+    trailing_pe, forward_pe = get_pe(ticker)
+    result = IndicatorResult(
+        ticker=ticker, price=price, prev_close=prev_close, signals=signals,
+        trailing_pe=trailing_pe, forward_pe=forward_pe,
+    )
     result.rules_passed, result.rule_results = apply_rules(df, result)
     return result
 

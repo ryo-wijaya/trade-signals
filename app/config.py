@@ -47,6 +47,17 @@ _DEFAULTS = {
     "rules": {
         "volume_confirmation": {"window_days": 20, "min_ratio": 1.0},
     },
+    "options": {
+        "leaps": {
+            "min_days": 365, "max_days": 730, "delta_min": 0.35, "delta_max": 0.70,
+            "min_open_interest": 10, "max_spread_pct": 0.15, "hv_window_days": 90,
+            "max_expirations": 4, "candidates_per_expiration": 3,
+        },
+        "wheel": {
+            "min_days": 7, "max_days": 21, "delta_min": 0.15, "delta_max": 0.30,
+            "min_open_interest": 10, "max_spread_pct": 0.15,
+        },
+    },
     "data": {
         "history_period": "400d",
         "bar_interval": "1d",
@@ -79,6 +90,7 @@ _DEFAULTS = {
         "detailed_max_tokens": 220,
         "portfolio_max_tokens": 1000,
         "news_max_tokens": 700,
+        "options_max_tokens": 260,
     },
 }
 

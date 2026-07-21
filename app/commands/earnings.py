@@ -1,45 +1,21 @@
 import asyncio
 import html
 import logging
-from datetime import date as Date, datetime
-
-import pandas as pd
-import pytz
-import yfinance as yf
+from datetime import date as Date
 
 from app.commands.registry import command
 from app.config import load_watchlist
+from app.earnings import next_earnings
 from app.telegram import send, now_sgt
 
 log = logging.getLogger(__name__)
-_SGT = pytz.timezone("Asia/Singapore")
-
-
-def _next_earnings(symbol: str) -> tuple[str, Date | None]:
-    try:
-        ed = yf.Ticker(symbol).earnings_dates
-        if ed is None or ed.empty:
-            return "not available", None
-
-        now = pd.Timestamp.now(tz="UTC")
-        future = ed[ed.index.tz_convert("UTC") > now]
-        if future.empty:
-            return "not available", None
-
-        next_dt = future.index.min().astimezone(_SGT)
-        today = datetime.now(_SGT).date()
-        days = (next_dt.date() - today).days
-        return f"{next_dt.strftime('%d %b %Y  %I:%M %p')}  ({days}d)", next_dt.date()
-    except Exception as e:
-        log.warning("earnings fetch failed for %s: %s", symbol, e)
-        return "not available", None
 
 
 async def build_earnings_message(tickers: list[str]) -> str:
     loop = asyncio.get_running_loop()
     entries: list[tuple[str, str, Date | None]] = []
     for ticker in tickers:
-        date_str, sort_key = await loop.run_in_executor(None, _next_earnings, ticker)
+        date_str, sort_key = await loop.run_in_executor(None, next_earnings, ticker)
         entries.append((ticker, date_str, sort_key))
 
     # soonest first; "not available" at the end, then alphabetical

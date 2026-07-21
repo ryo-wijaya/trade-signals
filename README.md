@@ -35,6 +35,7 @@ RSI vs its own 14-day MA (momentum rising/falling) is still shown in brackets as
 |---|---|
 | 50 EMA | Medium-term trend; price above = uptrend |
 | 200 EMA | Long-term trend; 50 EMA above 200 EMA = golden cross, below = death cross |
+| P/E | Trailing / forward price-to-earnings from Yahoo Finance; `n/a` for instruments with no PE (ETFs), `n/m` (not meaningful) when EPS is zero or negative |
 
 **Rating scale:** ±1 = Lean Buy / Lean Sell · ±2 = Buy / Sell · ±3 = Strong Buy / Strong Sell · 0 = Hold.
 
@@ -45,6 +46,8 @@ MACD was deliberately not added: it is another trend-following momentum vote, an
 **AI summary** (`/signalsplus`, the morning report, `/portfolioanalysis`): the LLM receives all indicator readings, the trend regime, and the signal state, and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), framed as multi-week swing decisions, with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
 
 Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
+
+**Options scanners** (`/options leaps` and `/options wheel`): two independent scanners over the live options chain, each with a per-ticker AI summary. See the "Options module" section below for the full design, ranking formulas, and — importantly — the data-accuracy limitations (there is no free historical-IV feed, so "cheap"/"rich" is a realized-volatility proxy, not a true IV percentile).
 
 ## Setup
 
@@ -147,6 +150,10 @@ fly ssh console   # shell into the running container
 | `/explain` | How to read each indicator |
 | `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks |
 | `/news` | Most important recent news for your favourites and their sectors — routine/noise items filtered out |
+| `/options leaps` | Near-ATM long-dated call scan (1–2yr, multiple expirations, with breakeven) for favourites, ranked nearest-the-money first, with AI TRADE/HOLD/NO TRADE verdict |
+| `/options leaps NVDA` | Same, for specific tickers |
+| `/options wheel` | Cash-secured-put scan (1–3 weeks out, ~2wk avg) for favourites, ranked by annualized yield, with AI TRADE/HOLD/NO TRADE verdict |
+| `/options wheel PFE` | Same, for specific tickers |
 | `/earnings` | Next earnings report dates for watchlist tickers (SGT) — also sent every Saturday midnight SGT |
 | `/watchlist` | View current watchlist (★ marks favourites) |
 | `/add AAPL TSLA` | Add tickers |
@@ -206,6 +213,14 @@ All settings live in `config.json`. Watchlist and priority-interval changes take
     "volume_confirmation": { "window_days": 20, "min_ratio": 1.0 }
   },
 
+  "options": {
+    "leaps": { "min_days": 365, "max_days": 730, "delta_min": 0.35, "delta_max": 0.70,
+               "min_open_interest": 10, "max_spread_pct": 0.15, "hv_window_days": 90,
+               "max_expirations": 4, "candidates_per_expiration": 3 },
+    "wheel": { "min_days": 7, "max_days": 21, "delta_min": 0.15, "delta_max": 0.30,
+               "min_open_interest": 10, "max_spread_pct": 0.15 }
+  },
+
   "data": {
     "history_period": "400d",
     "bar_interval": "1d",
@@ -239,7 +254,8 @@ All settings live in `config.json`. Watchlist and priority-interval changes take
     "max_tokens": 160,
     "detailed_max_tokens": 220,
     "portfolio_max_tokens": 1000,
-    "news_max_tokens": 700
+    "news_max_tokens": 700,
+    "options_max_tokens": 260
   }
 }
 ```
@@ -301,6 +317,33 @@ Sell alerts require the current bar's volume at or above its 20-day average (`ru
 ## News module
 
 `/news` and the morning report both call `app.llm.get_news_digest(tickers)` (same engine, one shared implementation) with your favourites list. The prompt instructs the model to search for news on those tickers and their sectors, but only report items that could materially move the price — earnings surprises, guidance changes, M&A, regulatory/legal action, major executive changes, product launches or recalls, credit rating changes, or macro/sector events (Fed decisions, tariffs, major competitor moves). Routine analyst price-target tweaks, generic "stock moved X%" recaps, and opinion pieces are explicitly excluded, and the model is told to omit a ticker entirely rather than pad the digest with non-material news. Configurable via `llm.news_max_tokens` (default 700).
+
+## Options module
+
+`app/options/` provides two independent scanners over the live options chain (`app/options/chain.py`, `volatility.py`, `leaps.py`, `wheel.py`), both exposed via `/options leaps` and `/options wheel`.
+
+**Data-accuracy notes — read before trusting the output:**
+
+- **"IV/HV" is a realized-volatility proxy, not a true IV percentile.** yfinance has no historical implied-volatility feed (that requires a paid data source). "Cheap"/"fair"/"rich" here means the option's current IV divided by the stock's own trailing 90-day *realized* volatility (annualized stdev of log returns) — a standard, defensible heuristic, but it is comparing IV against how much the stock has actually moved, not against a year of the option's own historical IV.
+- **Every price uses `mid = (bid+ask)/2`, never `lastPrice`.** yfinance's `lastPrice` on illiquid strikes is frequently a stale, crossed trade (confirmed live: a deep-ITM NVDA call showed `lastPrice` below its own live bid). Contracts with no bid are dropped outright.
+- **The bid-ask spread filter is a percentage-OR-absolute test**, not percentage alone — a nickel-wide spread on a $0.20 premium is "50%" but perfectly tradeable; a dollar-wide spread on a $10 premium is only "10%" but genuinely illiquid. A contract passes if either the percentage spread is tight (`max_spread_pct`) or the absolute spread is small (`min_absolute_spread`, $0.10 default, hardcoded).
+- **Smaller-cap tickers often have only one expiration inside the LEAPS window** (confirmed: NVDA has 4 expirations in the 1–2yr range, PFE has 2, MRSH and RXRX have exactly 1). The scanner shows every expiration it finds (up to `max_expirations`) rather than failing, and always discloses the actual expiration/DTE used for each group.
+- **Delta is computed via Black-Scholes** (`chain.py:black_scholes_delta`, no external dependency — just `math.erf`), using each contract's own IV, no dividend yield term. It's a ranking/filtering tool, not a precision Greek.
+- **Zero candidates is a valid, honest result** — it means nothing in the chain met the delta band and liquidity filters, not a bug. Both scanners show it plainly rather than forcing a bad recommendation.
+
+### LEAPS scanner
+
+`/options leaps [TICKER...]` (no ticker → favourites). Scans **every expiration** in `options.leaps.min_days`–`max_days` (365–730 days, i.e. 1–2yr), up to `max_expirations` (4) of them — so you can compare price and IV across the term structure (e.g. the same near-ATM strike at 14mo vs 18mo vs 23mo out) instead of seeing just one arbitrarily-picked expiration. Within each expiration, filters to **near-the-money** delta 0.35–0.70 with liquidity checks and ranks **nearest-strike-to-spot first** (IV/HV cheapness is only the tiebreak among similarly-ATM strikes, not the primary sort), showing up to `options.leaps.candidates_per_expiration` (3) strikes per expiration. The goal is capturing gamma-driven price movement over a multi-month hold (sell the option later, don't exercise it), not deep-ITM stock replacement or far-OTM leverage — ranking by cheapest IV/HV alone would happily surface a far-OTM strike at the edge of the delta band, which isn't what "near ATM" means. Calls only (LEAP puts are a specialized hedge case, out of scope).
+
+Each candidate shows its **breakeven** (strike + premium paid — the price the stock must reach by expiration just to break even) and an **IV/HV label** — the option's IV divided by the stock's own 90-day realized volatility: `cheap` (< 0.9) is a below-average premium for that volatility, `fair` (0.9–1.3) is typical, `rich` (> 1.3) means you'd be paying well above the stock's own recent volatility. Example: NVDA at $205, the near-ATM $205 call (14mo out) shows IV 46% against NVDA's 90-day realized volatility of 39% → IV/HV = 46/39 = 1.18 → `fair`, breakeven ≈ $205 + premium.
+
+Each result also shows the ticker's current technical/fundamental rating, trend, and P/E, and next earnings date, then gets **one** AI verdict spanning all expirations shown (`llm.build_leaps_prompt`): `TRADE $<strike>C` (naming a specific strike/expiration), `HOLD`, or `NO TRADE`, each with a reason — the model is explicitly told it's fine (expected, even) to say HOLD or NO TRADE rather than force a pick when the numbers don't support one.
+
+### Wheel scanner
+
+`/options wheel [TICKER...]` (no ticker → favourites). Scans cash-secured-put strikes 1–3 weeks out (averaging ~2 weeks), filters to delta magnitude 0.15–0.30, and ranks **descending by annualized yield** (`premium / (strike×100) × 365/DTE`) — the point of the wheel is collecting rich premium, so here a high IV/HV is desirable, the opposite of LEAPS. Shows the CSP entry leg only — the covered-call follow-through after assignment isn't scanned, since the app doesn't track your share ownership or cost basis. Same `TRADE $<strike>P` / `HOLD` / `NO TRADE` verdict format as LEAPS.
+
+**Earnings handling**: any candidate whose expiration falls on or after the next earnings date (i.e. you'd be holding the short put through the event) is flagged `⚠earnings`, not excluded — the richer premium is often real, but so is the gap risk, and it's shown as a deliberate choice rather than silently filtered.
 
 ## Backtesting
 

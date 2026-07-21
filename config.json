@@ -33,6 +33,27 @@
       "min_ratio": 1.0
     }
   },
+  "options": {
+    "leaps": {
+      "min_days": 365,
+      "max_days": 730,
+      "delta_min": 0.35,
+      "delta_max": 0.70,
+      "min_open_interest": 10,
+      "max_spread_pct": 0.15,
+      "hv_window_days": 90,
+      "max_expirations": 4,
+      "candidates_per_expiration": 3
+    },
+    "wheel": {
+      "min_days": 7,
+      "max_days": 21,
+      "delta_min": 0.15,
+      "delta_max": 0.30,
+      "min_open_interest": 10,
+      "max_spread_pct": 0.15
+    }
+  },
   "data": {
     "history_period": "400d",
     "bar_interval": "1d",
@@ -64,7 +85,8 @@
     "max_tokens": 160,
     "detailed_max_tokens": 220,
     "portfolio_max_tokens": 1000,
-    "news_max_tokens": 700
+    "news_max_tokens": 700,
+    "options_max_tokens": 260
   },
 
   "explanations": [
@@ -111,6 +133,18 @@
     {
       "name": "News",
       "text": "/news searches for material news on your favourites and their sectors — earnings surprises, M&A, regulatory action, major guidance or executive changes, macro events hitting the sector. Routine analyst-target tweaks and generic recaps are filtered out; if nothing material happened, that ticker is simply omitted."
+    },
+    {
+      "name": "P/E",
+      "text": "Trailing / forward price-to-earnings, shown as context in every report (not scored). 'n/a' means Yahoo doesn't publish a PE for that instrument (e.g. ETFs like IBIT). 'n/m' (not meaningful) means the trailing or forward EPS is zero or negative — the ratio would be a meaningless negative or undefined number, most common on early-stage/unprofitable names."
+    },
+    {
+      "name": "LEAPS Scanner",
+      "text": "/options leaps scans call strikes 1-2yr out ACROSS UP TO 4 expirations (not just one), so you can compare price/IV as the amount of time bought increases — e.g. a NVDA $205 call at 14mo vs 18mo vs 23mo out. Within each expiration it shows up to 3 near-the-money strikes (delta 0.35-0.70, liquidity-filtered), ranked nearest-to-the-money first — the goal is capturing gamma-driven price movement over a multi-month hold (the idea being you sell the option after a few months, not exercise it), not deep-ITM stock replacement or far-OTM lottery tickets. Each candidate shows its breakeven price (strike + premium paid — what the stock must reach by expiration just to break even) and an IV/HV label: the option's implied volatility divided by the stock's own 90-day realized volatility. 'cheap' (IV/HV below 0.9) means the market is pricing in less future movement than the stock has actually shown recently — a below-average premium for that volatility. 'fair' (0.9-1.3) is a typical premium, neither a bargain nor overpriced. 'rich' (above 1.3) means you'd be paying well above the stock's own recent volatility — a richer premium, less attractive to buy. EXAMPLE: NVDA at $205, a near-ATM $205 call (14mo out) shows IV 46% against NVDA's own 90-day realized volatility of 39% -> IV/HV = 46/39 = 1.18 -> labeled 'fair'; breakeven would be $205 + the premium paid. IMPORTANT: this is a realized-volatility proxy, not a true IV percentile/rank against a year of historical IV — yfinance has no historical IV feed, so there's no free source for that. Calls only. Smaller-cap tickers often have only one expiration in the target window; the scan discloses every expiration and DTE actually used rather than failing silently. Each result also gets ONE AI verdict spanning all expirations shown — TRADE (with a specific strike and expiration), HOLD, or NO TRADE — with a reason; it's explicitly told to say HOLD or NO TRADE rather than force a pick when the numbers don't support one."
+    },
+    {
+      "name": "Wheel Scanner",
+      "text": "/options wheel scans cash-secured put strikes 1-3 weeks out, averaging ~2 weeks (delta 0.15-0.30, liquidity-filtered) and ranks by annualized yield (premium / capital required, annualized) — here HIGH IV/HV is what you want, since you're selling (the opposite of LEAPS). Candidates whose expiration falls on or after the next earnings date are flagged (not excluded) with a warning, since holding a short put through an earnings surprise carries real gap risk despite the richer premium. Shows the cash-secured-put entry leg only — the covered-call follow-through after assignment isn't scanned, since the app doesn't track your share ownership or cost basis. Each result also gets an AI verdict — TRADE (with a specific strike), HOLD, or NO TRADE — with a reason; it's explicitly told to say HOLD or NO TRADE rather than force a pick when the numbers don't support one."
     }
   ]
 }

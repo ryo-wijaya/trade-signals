@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from app.routes import router
+from app.web_ui import router as web_ui_router
 from app.scheduler import create_scheduler
 from app.bot import start_polling
 
@@ -29,6 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Trade Signals", lifespan=lifespan)
 app.include_router(router)
+app.include_router(web_ui_router)
 
 
 @app.get("/health")

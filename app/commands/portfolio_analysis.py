@@ -113,7 +113,7 @@ async def handle_portfolio_analysis(args: list[str], chat_id: str) -> None:
         sizing_section = await loop.run_in_executor(None, _build_sizing_section, results, sizing_cfg)
         cheap_section = _build_cheap_section(results)
 
-        tickers_str = "  ".join(r.ticker for r in results)
+        tickers_str = "  ".join(html.escape(r.ticker) for r in results)
         header = f"<b>Portfolio Analysis</b>  {now_sgt()}\n<code>{tickers_str}</code>\n\n"
         body = html.escape(analysis)
         if cheap_section:

@@ -1,6 +1,11 @@
+import asyncio
+
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
-from app.telegram import _call, build_priority_alert, build_stock_messages, signal_line, split_message
+from app.telegram import (
+    _call, build_priority_alert, build_stock_messages, signal_line, split_message,
+    send, collect_output,
+)
 from app.valuation import ValuationResult, HistoricalBand
 
 
@@ -124,3 +129,71 @@ class TestSplitMessage:
         assert len(chunks) > 1
         assert all(len(c) <= 4000 for c in chunks)
         assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+class TestCollectOutput:
+    def test_default_behavior_unchanged_no_credentials_no_collector(self, monkeypatch):
+        # No collect_output() active, and no Telegram credentials configured
+        # -- send() must take its existing early-return path, not append
+        # anywhere or raise. Proves the refactor is a no-op by default.
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+        asyncio.run(send("hello"))  # must not raise
+
+    def test_messages_collected_instead_of_sent(self):
+        async def _run():
+            with collect_output() as collected:
+                await send("first message")
+                await send("second message", chat_id="123")
+            return collected
+
+        collected = asyncio.run(_run())
+        assert collected == ["first message", "second message"]
+
+    def test_collector_does_not_leak_outside_its_context(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+        async def _run():
+            with collect_output() as collected:
+                await send("inside")
+            await send("outside")  # collector context has exited
+            return collected
+
+        collected = asyncio.run(_run())
+        assert collected == ["inside"]  # "outside" call didn't append here
+
+    def test_nested_collectors_are_independent(self):
+        async def _run():
+            with collect_output() as outer:
+                await send("outer message")
+                with collect_output() as inner:
+                    await send("inner message")
+                await send("outer again")
+            return outer, inner
+
+        outer, inner = asyncio.run(_run())
+        assert outer == ["outer message", "outer again"]
+        assert inner == ["inner message"]
+
+    def test_collector_propagates_into_spawned_task(self):
+        async def _run():
+            with collect_output() as collected:
+                async def _child():
+                    await send("from a spawned task")
+                await asyncio.create_task(_child())
+            return collected
+
+        collected = asyncio.run(_run())
+        assert collected == ["from a spawned task"]
+
+    def test_returns_html_formatted_text_unescaped_a_second_time(self):
+        # The collected string is exactly what would have been posted to
+        # Telegram (already html.escape()'d where needed by the caller) --
+        # collect_output() must not re-escape or otherwise transform it.
+        async def _run():
+            with collect_output() as collected:
+                await send("<b>NVDA</b> &amp; friends")
+            return collected
+
+        assert asyncio.run(_run()) == ["<b>NVDA</b> &amp; friends"]

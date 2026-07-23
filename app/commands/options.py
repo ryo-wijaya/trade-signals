@@ -58,7 +58,7 @@ def _render_context(scan) -> list[str]:
 
 
 def _render_leaps(scan) -> str:
-    lines = [f"<b>{scan.ticker}</b>  ${scan.spot:.2f}  LEAPS (1-2yr)"]
+    lines = [f"<b>{html.escape(scan.ticker)}</b>  ${scan.spot:.2f}  LEAPS (1-2yr)"]
     if scan.error:
         lines.append(f"<i>{html.escape(scan.error)}</i>")
         return "\n".join(lines)
@@ -82,7 +82,7 @@ def _render_leaps(scan) -> str:
 
 
 def _render_wheel(scan) -> str:
-    lines = [f"<b>{scan.ticker}</b>  ${scan.spot:.2f}  Wheel (CSP) · {scan.expiration} ({scan.dte}d)"]
+    lines = [f"<b>{html.escape(scan.ticker)}</b>  ${scan.spot:.2f}  Wheel (CSP) · {scan.expiration} ({scan.dte}d)"]
     if scan.error:
         lines.append(f"<i>{html.escape(scan.error)}</i>")
         return "\n".join(lines)
@@ -142,7 +142,7 @@ async def handle_options(args: list[str], chat_id: str) -> None:
             scan = await loop.run_in_executor(None, scan_fn, ticker)
         except Exception as exc:
             log.error("options scan failed for %s: %s", ticker, exc)
-            await send(header + f"<b>{ticker}</b>\n<i>scan failed, check logs</i>", chat_id=chat_id)
+            await send(header + f"<b>{html.escape(ticker)}</b>\n<i>scan failed, check logs</i>", chat_id=chat_id)
             await asyncio.sleep(0.3)
             continue
 

@@ -1,7 +1,24 @@
 import json
 import os
+import re
 import shutil
 from pathlib import Path
+
+# Real ticker symbols (including Yahoo Finance's exchange-suffix form, e.g.
+# "9988.HK", "BMW.DE") only ever use letters, digits, '.', and '-'. Confirmed
+# live: ticker strings flow unescaped into several HTML-formatted messages
+# across the app (e.g. app/telegram.py's stock headers) — harmless while the
+# only renderer was the Telegram client (its HTML parser doesn't execute
+# script), but a real XSS vector once the same strings render in an actual
+# browser via the web UI. Filtering to this charset at the single point
+# tickers get persisted closes the class of injection at its root, rather
+# than relying on every downstream f-string to remember to escape it.
+_SAFE_TICKER_RE = re.compile(r"^[A-Z0-9.\-]+$")
+
+
+def sanitize_tickers(tickers: list[str]) -> list[str]:
+    return [t for t in tickers if _SAFE_TICKER_RE.match(t)]
+
 
 # Keys written by the user via Telegram commands, preserved across deploys.
 _USER_KEYS = {"watchlist", "favourites", "priority_interval_minutes"}
@@ -121,6 +138,8 @@ _DEFAULTS = {
         "options_max_tokens": 260,
         "leaps_max_tokens": 700,
         "deepdive_max_tokens": 1500,
+        "cheap_stock_max_tokens": 400,
+        "cheap_portfolio_max_tokens": 600,
     },
 }
 
@@ -147,6 +166,7 @@ def load_watchlist() -> list[str]:
 
 
 def save_watchlist(tickers: list[str]) -> None:
+    tickers = sanitize_tickers(tickers)
     data = _load()
     data["watchlist"] = tickers
     data["favourites"] = [t for t in data.get("favourites", []) if t in tickers]
@@ -159,7 +179,7 @@ def load_favourites() -> list[str]:
 
 def save_favourites(tickers: list[str]) -> None:
     data = _load()
-    data["favourites"] = tickers
+    data["favourites"] = sanitize_tickers(tickers)
     _save(data)
 
 

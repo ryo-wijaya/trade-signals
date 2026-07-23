@@ -48,6 +48,9 @@ _RULES = (
     "still clearly undervalued on fundamentals, then HOLD.\n"
     "- Verdict HOLD only when the setup is genuinely neutral or fundamentals contradict "
     "the setup.\n"
+    "Factor in BOTH the overall technical rating shown above and the analyst price target's "
+    "upside/downside versus the current price as concrete inputs to your verdict — these are "
+    "given specifically so you weigh them, not just the raw indicators.\n"
     "A downtrend regime raises the bar for BUY (falling-knife risk); mention it if relevant.\n"
     "This system's edge appears over 10-20 trading days — frame your verdict as a "
     "multi-week swing decision, not a day trade. A confirmed ENTRY state strengthens "
@@ -127,7 +130,8 @@ def build_prompt(r: IndicatorResult, detailed: bool = False) -> str:
         ask = (
             'Reply in exactly this format: "BUY — reason" or "SELL — reason" or "HOLD — reason", '
             "where reason is 3-4 sentences that MUST cite at least two specific numbers — from the "
-            "data above (valuation range, growth rate, analyst target) or from a current fact you "
+            "data above (valuation range, growth rate, the analyst price target's upside/downside, "
+            "or the overall technical rating) or from a current fact you "
             "find (latest quarter's revenue/EPS, guidance, market share). Then name the most "
             "important upcoming catalyst or recent development — do NOT name the next earnings "
             "date as the catalyst unless it is within 2 weeks, and if it is, say what specifically "
@@ -320,10 +324,11 @@ _DEEPDIVE_ASK = (
     "real web search only for what isn't already given above (news, competitors, macro); the "
     "technicals, valuation, and analyst numbers above are already computed, cite them rather than "
     "re-deriving them:\n"
-    "1. Technical Setup — read the indicators, trend, and confirmation gates above; is this a "
-    "high-conviction setup or a weak one, and at what price does that change.\n"
-    "2. Fundamentals & Valuation — judge the stock using the valuation-vs-history and "
-    "growth/margin/analyst numbers above; cite the specific figures that drive your view.\n"
+    "1. Technical Setup — read the indicators, trend, confirmation gates, and overall rating "
+    "above; is this a high-conviction setup or a weak one, and at what price does that change.\n"
+    "2. Fundamentals & Valuation — judge the stock using the valuation-vs-history, growth/margin "
+    "numbers, and the analyst price target's upside/downside versus the current price above; "
+    "cite the specific figures that drive your view.\n"
     "3. Options & Sentiment — what the IV/HV and put/call positioning above imply about how the "
     "options market is pricing risk right now.\n"
     "4. News, Catalysts & Competition — the most important recent development, the next real "
@@ -386,6 +391,78 @@ def build_deepdive_prompt(r: IndicatorResult, snapshot) -> str:
             lines.append(f"Next earnings: {snapshot.next_earnings}.")
 
     return "\n".join(lines) + "\n\n" + _DEEPDIVE_ASK
+
+
+_CHEAP_STOCK_ASK = (
+    "The data above already produced a computed valuation verdict for this stock, based on P/E, "
+    "PEG, and P/S all measured against its OWN historical range/growth, not the market's. Write a "
+    "genuinely reasoned paragraph (4-6 sentences) explaining WHY this stock reads that way, "
+    "weighing ALL of: the P/E-vs-its-own-history read, the PEG read, the P/S-vs-its-own-history "
+    "read, its growth/margin trajectory, the analyst price target's upside or downside versus the "
+    "current price, and the stock's overall technical rating (does an oversold/overbought read "
+    "reinforce or contradict the valuation picture?). If any factor cuts against the computed "
+    "verdict, say so explicitly rather than ignoring it — a genuinely balanced analysis, not a "
+    "one-sided pitch. Do not invent a different cheap/fair/expensive label than the one already "
+    "computed above; your job is to explain and contextualize it, not override it. Plain text "
+    "only, no markdown, no citation numbers, no headers."
+)
+
+
+def build_cheap_stock_prompt(r: IndicatorResult) -> str:
+    """Single-ticker /cheap deep-dive: reasons about the ALREADY-computed
+    score/label using every available factor, rather than the deterministic
+    one-line 'key driver' this replaces for the single-ticker case."""
+    from app.telegram import _call
+    v = r.valuation
+    lines = [
+        f"{r.ticker} at ${r.price:.2f}. Computed valuation verdict: {v.score:.0f}/100 "
+        f"({v.score_label}), 0=cheapest, 100=most expensive.",
+        f"Overall technical rating: {_call(r.score)} ({r.trend_label or 'unknown'} trend).",
+    ]
+    valuation_line = _valuation_line(v)
+    if valuation_line:
+        lines.append(valuation_line)
+    fundamentals_line = _fundamentals_line(r)
+    if fundamentals_line:
+        lines.append(fundamentals_line)
+    return "\n".join(lines) + "\n\n" + _CHEAP_STOCK_ASK
+
+
+_CHEAP_PORTFOLIO_ASK = (
+    "Each stock above already has a computed valuation verdict (0=cheapest, 100=most expensive, "
+    "vs its OWN history) and technical rating. Write a genuinely reasoned portfolio-level summary "
+    "(5-7 sentences) — not a per-ticker recap, a synthesis: which names are genuinely cheap AND "
+    "showing a supportive technical/growth picture (the strongest combination), which look cheap "
+    "on paper but carry a warning sign worth flagging (weak growth, a falling or unsupportive "
+    "price target, a deteriorating technical rating), and whether the expensive names' premium "
+    "looks justified by growth/analyst targets or just looks rich. Weigh the analyst price targets "
+    "and overall ratings shown for each name, not just the valuation score alone. End with one "
+    "sentence naming the single most attractive name and the single one most worth trimming or "
+    "avoiding, with a one-line reason each. Plain text only, no markdown, no bullets, no citation "
+    "numbers."
+)
+
+
+def build_cheap_portfolio_prompt(results: list[IndicatorResult]) -> str:
+    """Portfolio-level /cheap synthesis across every scored ticker — replaces
+    per-ticker prose entirely for the multi-ticker case with one overarching
+    analysis that can compare names against each other."""
+    from app.telegram import _call
+    blocks = []
+    for r in results:
+        v = r.valuation
+        if not v or v.score is None:
+            continue
+        block = [f"{r.ticker} ${r.price:.2f}: valuation {v.score:.0f}/100 ({v.score_label}), "
+                 f"technical rating {_call(r.score)}."]
+        valuation_line = _valuation_line(v)
+        if valuation_line:
+            block.append(valuation_line)
+        fundamentals_line = _fundamentals_line(r)
+        if fundamentals_line:
+            block.append(fundamentals_line)
+        blocks.append(" ".join(block))
+    return "\n".join(blocks) + "\n\n" + _CHEAP_PORTFOLIO_ASK
 
 
 async def get_summary(r: IndicatorResult, detailed: bool = False) -> str:

@@ -6,7 +6,7 @@ from app.indicators.engine import IndicatorResult
 from app.llm import (
     build_prompt, build_news_prompt, build_leaps_prompt, build_wheel_prompt,
     build_deepdive_prompt, trim_incomplete, clean_response, _valuation_line,
-    _fundamentals_line,
+    _fundamentals_line, build_cheap_stock_prompt, build_cheap_portfolio_prompt,
 )
 from app.commands.portfolio_analysis import _build_prompt as build_portfolio_prompt
 from app.valuation import ValuationResult, HistoricalBand
@@ -92,7 +92,7 @@ def _valuation(**overrides) -> ValuationResult:
         pe_band=HistoricalBand(low=39.0, high=112.0, median=46.2, n=4, label="cheap"),
         peg=0.57, peg_label="cheap", price_to_sales=20.3,
         ps_band=HistoricalBand(low=17.5, high=24.4, median=21.8, n=4, label="fair"),
-        verdict="cheap",
+        verdict="cheap", score=28.0, score_label="cheap",
     )
     defaults.update(overrides)
     return ValuationResult(**defaults)
@@ -150,6 +150,16 @@ class TestBuildPrompt:
     def test_detailed_asks_for_catalyst(self):
         assert "catalyst" in build_prompt(_result(), detailed=True)
         assert "catalyst" not in build_prompt(_result(), detailed=False)
+
+    def test_rules_require_weighing_rating_and_price_target(self):
+        prompt = build_prompt(_result())
+        assert "the overall technical rating shown above" in prompt
+        assert "the analyst price target's upside/downside" in prompt
+
+    def test_detailed_ask_names_price_target_and_rating_as_citable(self):
+        prompt = build_prompt(_result(), detailed=True)
+        assert "the analyst price target's upside/downside" in prompt
+        assert "the overall technical rating" in prompt
 
     def test_no_valuation_line_when_valuation_is_none(self):
         r = _result()
@@ -464,6 +474,11 @@ class TestBuildDeepdivePrompt:
         assert "1-3 sentences" in prompt
         assert "anchored to a number or named fact" in prompt
 
+    def test_asks_for_overall_rating_and_price_target(self):
+        prompt = build_deepdive_prompt(_result(), self._snapshot())
+        assert "confirmation gates, and overall rating" in prompt
+        assert "the analyst price target's upside/downside versus the current price" in prompt
+
     def test_trade_plan_is_entry_zone_only(self):
         prompt = build_deepdive_prompt(_result(), self._snapshot())
         assert '"Trade Plan:"' in prompt
@@ -510,6 +525,71 @@ class TestBuildDeepdivePrompt:
 
     def test_swing_not_day_trade_framing(self):
         assert "multi-week swing decision, not a day trade" in build_deepdive_prompt(_result(), self._snapshot())
+
+
+class TestBuildCheapStockPrompt:
+    def test_includes_computed_verdict_and_rating(self):
+        r = _result()
+        r.valuation = _valuation()
+        prompt = build_cheap_stock_prompt(r)
+        assert "Computed valuation verdict: 24/100 (cheap)" not in prompt  # score isn't 24 in this fixture
+        assert "Computed valuation verdict:" in prompt
+        assert "0=cheapest, 100=most expensive" in prompt
+        assert "Overall technical rating: Strong Buy" in prompt
+
+    def test_includes_valuation_and_fundamentals_lines(self):
+        r = _result()
+        r.valuation = _valuation()
+        r.fundamentals = _fundamentals()
+        prompt = build_cheap_stock_prompt(r)
+        assert "Valuation vs its own history" in prompt
+        assert "analyst mean target $303" in prompt
+
+    def test_asks_to_weigh_all_factors_and_not_override_verdict(self):
+        r = _result()
+        r.valuation = _valuation()
+        prompt = build_cheap_stock_prompt(r)
+        assert "does an oversold/overbought read reinforce or contradict the valuation picture" in prompt
+        assert "Do not invent a different cheap/fair/expensive label" in prompt
+        assert "say so explicitly rather than ignoring it" in prompt
+
+    def test_asks_for_balanced_not_one_sided_analysis(self):
+        r = _result()
+        r.valuation = _valuation()
+        assert "not a one-sided pitch" in build_cheap_stock_prompt(r)
+
+
+class TestBuildCheapPortfolioPrompt:
+    def _scored_result(self, ticker="NVDA", **overrides):
+        r = _result()
+        r.ticker = ticker
+        r.valuation = _valuation(**overrides)
+        return r
+
+    def test_includes_one_line_per_scored_ticker(self):
+        results = [self._scored_result("NVDA"), self._scored_result("CRM", verdict="fair")]
+        prompt = build_cheap_portfolio_prompt(results)
+        assert "NVDA $171.30: valuation" in prompt
+        assert "CRM $171.30: valuation" in prompt
+
+    def test_unscored_tickers_excluded(self):
+        r = _result()
+        r.ticker = "IBIT"
+        r.valuation = None
+        prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA"), r])
+        assert "IBIT" not in prompt
+
+    def test_asks_for_synthesis_not_per_ticker_recap(self):
+        prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA")])
+        assert "not a per-ticker recap, a synthesis" in prompt
+
+    def test_asks_to_flag_cheap_with_warning_signs(self):
+        prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA")])
+        assert "cheap on paper but carry a warning sign" in prompt
+
+    def test_asks_for_most_attractive_and_most_worth_avoiding(self):
+        prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA")])
+        assert "the single most attractive name and the single one most worth trimming or avoiding" in prompt
 
 
 class TestPortfolioPrompt:

@@ -1,7 +1,10 @@
+import asyncio
+
 from app.commands.cheap import (
-    build_valuation_ranking, _key_driver, _pe_phrase, _peg_phrase, _ps_phrase,
+    build_valuation_ranking, handle_cheap, _valuation_detail, _pe_phrase, _peg_phrase, _ps_phrase,
     _band_position_phrase,
 )
+import app.commands.cheap as cheap_mod
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
 from app.valuation import ValuationResult, HistoricalBand
@@ -91,32 +94,31 @@ class TestPsPhrase:
         assert _ps_phrase(v) == "P/S 23.8 is below its entire 4yr range (28.9-117.9)."
 
 
-class TestKeyDriver:
-    def test_picks_most_extreme_deviation_from_fifty(self):
-        # peg_score=25 (deviation 25) should beat pe_score=45 (deviation 5)
-        # and ps_score=55 (deviation 5).
+class TestValuationDetail:
+    def test_includes_pe_peg_and_ps_together_not_just_one(self):
+        # Previously only the most-extreme-from-50 signal was shown; now all
+        # three computable numbers must appear together for every ticker.
         v = _cheap_valuation(pe_score=45.0, peg_score=25.0, ps_score=55.0)
-        driver = _key_driver(v)
-        assert "PEG" in driver
+        detail = _valuation_detail(v)
+        assert "Trailing P/E" in detail
+        assert "PEG" in detail
+        assert "P/S" in detail
 
-    def test_pe_wins_when_most_extreme(self):
-        v = _cheap_valuation(pe_score=5.0, peg_score=45.0, ps_score=55.0)
-        assert "Trailing P/E" in _key_driver(v)
-
-    def test_ps_wins_when_most_extreme(self):
-        v = _cheap_valuation(pe_score=45.0, peg_score=48.0, ps_score=95.0)
-        assert _key_driver(v).startswith("P/S")
-
-    def test_forward_pe_never_picked_as_standalone_driver(self):
-        # forward_pe_score is the most extreme, but it's folded into the P/E
-        # phrase, not treated as its own candidate.
+    def test_forward_pe_folded_into_pe_phrase_not_separate(self):
         v = _cheap_valuation(pe_score=48.0, forward_pe_score=2.0, peg_score=49.0, ps_score=51.0)
-        driver = _key_driver(v)
-        assert "Trailing P/E" in driver  # pe wins among the 3 real candidates
+        detail = _valuation_detail(v)
+        assert "cheaper still" in detail  # forward P/E clause folded into the PE sentence
+
+    def test_missing_peg_omitted_but_pe_and_ps_still_shown(self):
+        v = _cheap_valuation(peg=None, peg_label="unknown")
+        detail = _valuation_detail(v)
+        assert "Trailing P/E" in detail
+        assert "PEG" not in detail
+        assert "P/S" in detail
 
     def test_no_signals_available(self):
         v = ValuationResult(ticker="X", verdict="insufficient data")
-        assert _key_driver(v) == "no computable valuation signal."
+        assert _valuation_detail(v) == "no computable valuation signal."
 
 
 class TestBuildValuationRanking:
@@ -162,9 +164,11 @@ class TestBuildValuationRanking:
         assert "favourites" in report
         assert "0 = cheapest, 100 = most expensive" in report
 
-    def test_driver_line_present_per_ticker(self):
+    def test_detail_line_present_per_ticker_with_pe_peg_and_ps(self):
         report = build_valuation_ranking([_result("NVDA", 212.06, _cheap_valuation())], "watchlist")
         assert "below its entire 4yr range" in report
+        assert "PEG" in report
+        assert "P/S" in report
 
     def test_only_cheap_filters_to_cheap_bands_and_titles_differently(self):
         results = [
@@ -198,3 +202,102 @@ class TestBuildValuationRanking:
         assert "AAA" in report
         assert "BBB" in report
         assert "ZZZ" not in report
+
+
+def _async_return(value):
+    async def _inner(*a, **kw):
+        return value
+    return _inner
+
+
+class TestHandleCheapAiAnalysis:
+    def _wire(self, monkeypatch, results):
+        sent = []
+
+        async def _fake_send(msg, chat_id=None):
+            sent.append(msg)
+
+        monkeypatch.setattr(cheap_mod, "send", _fake_send)
+        monkeypatch.setattr(cheap_mod, "load_watchlist", lambda: ["NVDA"])
+        monkeypatch.setattr(cheap_mod, "analyze_tickers", lambda tickers: (results, []))
+        return sent
+
+    def test_single_scored_ticker_uses_stock_prompt(self, monkeypatch):
+        results = [_result("NVDA", 212.06, _cheap_valuation())]
+        sent = self._wire(monkeypatch, results)
+        captured = {}
+
+        def _fake_build_stock(r):
+            captured["stock_ticker"] = r.ticker
+            return "STOCK-PROMPT"
+
+        monkeypatch.setattr(cheap_mod, "build_cheap_stock_prompt", _fake_build_stock)
+        monkeypatch.setattr(cheap_mod, "build_cheap_portfolio_prompt", lambda rs: "PORTFOLIO-PROMPT")
+
+        async def _fake_chat(prompt, max_tokens):
+            captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
+            return "Reasoned single-stock take."
+
+        monkeypatch.setattr(cheap_mod, "openrouter_chat", _fake_chat)
+
+        asyncio.run(handle_cheap([], "123"))
+
+        assert captured["stock_ticker"] == "NVDA"
+        assert captured["prompt"] == "STOCK-PROMPT"
+        assert any("Reasoned single-stock take." in m for m in sent)
+        assert any("Why It's Priced This Way" in m for m in sent)
+
+    def test_multi_scored_tickers_use_portfolio_prompt(self, monkeypatch):
+        results = [
+            _result("NVDA", 212.06, _cheap_valuation(score=15.0, score_label="very cheap")),
+            _result("META", 627.0, _cheap_valuation(score=78.0, score_label="expensive")),
+        ]
+        sent = self._wire(monkeypatch, results)
+        captured = {}
+
+        monkeypatch.setattr(cheap_mod, "build_cheap_stock_prompt", lambda r: "STOCK-PROMPT")
+
+        def _fake_build_portfolio(rs):
+            captured["tickers"] = [r.ticker for r in rs]
+            return "PORTFOLIO-PROMPT"
+
+        monkeypatch.setattr(cheap_mod, "build_cheap_portfolio_prompt", _fake_build_portfolio)
+
+        async def _fake_chat(prompt, max_tokens):
+            captured["prompt"] = prompt
+            return "Reasoned portfolio synthesis."
+
+        monkeypatch.setattr(cheap_mod, "openrouter_chat", _fake_chat)
+
+        asyncio.run(handle_cheap([], "123"))
+
+        assert captured["tickers"] == ["NVDA", "META"]
+        assert captured["prompt"] == "PORTFOLIO-PROMPT"
+        assert any("Reasoned portfolio synthesis." in m for m in sent)
+        assert any("Portfolio Take" in m for m in sent)
+
+    def test_no_scored_tickers_skips_ai_call_entirely(self, monkeypatch):
+        results = [_result("IBIT", 37.0, None)]
+        sent = self._wire(monkeypatch, results)
+
+        def _boom(*a, **kw):
+            raise AssertionError("AI prompt builder should not be called when nothing is scored")
+
+        monkeypatch.setattr(cheap_mod, "build_cheap_stock_prompt", _boom)
+        monkeypatch.setattr(cheap_mod, "build_cheap_portfolio_prompt", _boom)
+        monkeypatch.setattr(cheap_mod, "openrouter_chat", _async_return("should never run"))
+
+        asyncio.run(handle_cheap([], "123"))
+
+        assert not any("should never run" in m for m in sent)
+
+    def test_empty_ai_summary_sends_no_extra_message(self, monkeypatch):
+        results = [_result("NVDA", 212.06, _cheap_valuation())]
+        sent = self._wire(monkeypatch, results)
+        monkeypatch.setattr(cheap_mod, "build_cheap_stock_prompt", lambda r: "STOCK-PROMPT")
+        monkeypatch.setattr(cheap_mod, "openrouter_chat", _async_return(""))
+
+        asyncio.run(handle_cheap([], "123"))
+
+        assert not any("Why It's Priced This Way" in m for m in sent)

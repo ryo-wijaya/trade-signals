@@ -1,7 +1,9 @@
 import asyncio
+import contextlib
 import html
 import logging
 import os
+from contextvars import ContextVar
 from datetime import datetime
 import httpx
 import pytz
@@ -15,6 +17,28 @@ _RULE_LABELS = {
     "price_structure": "Structure",
     "volume_confirmation": "Volume",
 }
+
+# When set, send() appends to this instead of posting to Telegram — lets the
+# web UI await a command to completion and render exactly what it would have
+# sent, without any command handler needing to know or care where its output
+# ends up. None (the default) preserves today's Telegram-only behavior
+# exactly; nothing that doesn't opt in via collect_output() is affected.
+_collector: ContextVar[list[str] | None] = ContextVar("_collector", default=None)
+
+
+@contextlib.contextmanager
+def collect_output():
+    """Context manager: while active, send() calls in this async context
+    (and any task spawned within it, since asyncio.create_task copies the
+    current context) are captured into a list instead of posted to Telegram.
+    Yields the list, which fills in as send() is called — read it after the
+    awaited work completes."""
+    collected: list[str] = []
+    token = _collector.set(collected)
+    try:
+        yield collected
+    finally:
+        _collector.reset(token)
 
 
 def now_sgt() -> str:
@@ -30,6 +54,11 @@ def _api(endpoint: str) -> str:
 
 
 async def send(text: str, chat_id: str | None = None) -> None:
+    collected = _collector.get()
+    if collected is not None:
+        collected.append(text)
+        return
+
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     target = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not target:
@@ -124,7 +153,7 @@ def build_stock_messages(
 ) -> list[str]:
     messages = [f"<b>{title}</b>  {timestamp}"]
     for r in results:
-        header = f"<b>{r.ticker}</b>  ${r.price:.2f}  {_call(r.score)}"
+        header = f"<b>{html.escape(r.ticker)}</b>  ${r.price:.2f}  {_call(r.score)}"
         if r.trend_label:
             header += f"  ·  {html.escape(r.trend_label)}"
         lines = [
@@ -139,7 +168,7 @@ def build_stock_messages(
 
 
 def build_priority_alert(r: IndicatorResult) -> str:
-    header = f"ALERT: <b>{r.ticker}  {_call(r.score)}</b>"
+    header = f"ALERT: <b>{html.escape(r.ticker)}  {_call(r.score)}</b>"
     if r.trend_label:
         header += f"  ·  {html.escape(r.trend_label)}"
     return "\n".join([

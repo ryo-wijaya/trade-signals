@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from app.auth import require_api_key
 from app.config import (
     load_watchlist, save_watchlist, load_priority_interval,
-    load_valid_priority_intervals,
+    load_valid_priority_intervals, sanitize_tickers,
 )
 
 router = APIRouter(prefix="/api/config", dependencies=[Depends(require_api_key)])
@@ -30,8 +30,9 @@ def update_watchlist(body: WatchlistUpdate):
         current -= {t.upper() for t in body.remove}
         tickers = sorted(current)
 
+    tickers = sanitize_tickers(tickers)
     if not tickers:
-        raise HTTPException(status_code=400, detail="Watchlist cannot be empty")
+        raise HTTPException(status_code=400, detail="Watchlist cannot be empty (or contained only invalid symbols)")
 
     save_watchlist(tickers)
     return {"watchlist": tickers}

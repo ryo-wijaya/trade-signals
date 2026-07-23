@@ -21,9 +21,13 @@ async def handle_config(args: list[str], chat_id: str) -> None:
     offset = scfg.get("minute_offset", 5)
     morning_h = scfg.get("morning_report_hour", 10)
     morning_m = scfg.get("morning_report_minute", 0)
+    leaps_alert_h = scfg.get("leaps_alert_hour", 10)
+    leaps_alert_m = scfg.get("leaps_alert_minute", 30)
+    leaps_alert_threshold = cfg.get("options", {}).get("leaps_alert", {}).get("iv_hv_threshold", 0.9)
     close_fmt = f"{close_h % 12 or 12}:{offset:02d}{'am' if close_h < 12 else 'pm'} ET"
     open_fmt = f"{open_h % 12 or 12}:{offset:02d}{'am' if open_h < 12 else 'pm'} ET"
     morning_fmt = f"{morning_h % 12 or 12}:{morning_m:02d}{'am' if morning_h < 12 else 'pm'} ET"
+    leaps_alert_fmt = f"{leaps_alert_h % 12 or 12}:{leaps_alert_m:02d}{'am' if leaps_alert_h < 12 else 'pm'} ET"
     valid_priorities = "  ".join(f"/priority {v}" for v in load_valid_priority_intervals())
 
     log.info("config queried: watchlist=%s favourites=%s priority=%smin", tickers, favourites, priority)
@@ -31,13 +35,16 @@ async def handle_config(args: list[str], chat_id: str) -> None:
     await send(
         f"<b>Config</b>\n\n"
         f"<b>Watchlist ({len(tickers)} tickers)</b>\n{body}\n\n"
-        f"<b>Morning Report</b>  (detailed AI summary + news)\n"
+        f"<b>Morning Report</b>  (detailed AI summary + relative strength + cheap list + news)\n"
         f"  Daily {morning_fmt} Mon–Fri\n"
         f"  Scope: favourites only ({len(favourites)} tickers)\n"
         f"  Not manually triggerable — use /signalsplus or /news on demand\n\n"
         f"<b>Priority Alert</b>\n"
         f"  Every {priority}min · Mon–Fri {open_fmt}–{close_fmt}\n"
         f"  Change: {valid_priorities}\n\n"
+        f"<b>Cheap LEAPS Alert</b>\n"
+        f"  Daily {leaps_alert_fmt} Mon–Fri · IV/HV below {leaps_alert_threshold:.2f}\n"
+        f"  Scope: favourites only ({len(favourites)} tickers)\n\n"
         f"<b>Earnings</b>\n"
         f"  Weekly · Saturday midnight SGT",
         chat_id=chat_id,

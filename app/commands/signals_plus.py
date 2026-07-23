@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 from app.commands.registry import command
 from app.config import load_watchlist, load_favourites
@@ -31,13 +32,19 @@ async def handle_signals_plus(args: list[str], chat_id: str) -> None:
     results, priority_alerts = await loop.run_in_executor(None, analyze_tickers, targets)
 
     summaries: dict[str, str] = {}
+    has_llm = bool(os.getenv("OPENROUTER_API_KEY", ""))
     if results:
         settled = await asyncio.gather(*[get_summary(r, detailed=True) for r in results], return_exceptions=True)
         for r, outcome in zip(results, settled):
             if isinstance(outcome, str) and outcome:
                 summaries[r.ticker] = outcome
-            elif isinstance(outcome, Exception):
+                continue
+            if isinstance(outcome, Exception):
                 log.error("llm summary failed for %s: %s", r.ticker, outcome)
+            if has_llm:
+                # Key is set, so an empty summary is a real failure — say so
+                # instead of silently sending the message without one.
+                summaries[r.ticker] = "AI summary unavailable — check logs."
 
     for alert in priority_alerts:
         log.info("priority alert: %s score=%d", alert.ticker, alert.score)

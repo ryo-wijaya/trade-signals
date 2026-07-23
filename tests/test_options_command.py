@@ -1,4 +1,4 @@
-from app.commands.options import _parse_verdict, _render_leaps, _render_wheel
+from app.commands.options import _parse_verdict, _highlight_closing_verdict, _render_leaps, _render_wheel
 
 
 class TestParseVerdict:
@@ -25,13 +25,14 @@ class TestParseVerdict:
 
 def _leaps_scan(**overrides):
     from app.options.leaps import LeapsScan, LeapsCandidate
+    candidate = LeapsCandidate(
+        expiration="2027-12-17", dte=513, strike=220.0, mid=34.10, iv=0.47, delta=0.57,
+        iv_hv=0.98, iv_hv_label="fair", open_interest=200, spread_pct=0.02, breakeven=254.10,
+    )
     defaults = dict(
         ticker="NVDA", spot=206.0, hv=0.39,
         delta_min=0.35, delta_max=0.70,
-        candidates=[
-            LeapsCandidate(expiration="2027-12-17", dte=513, strike=220.0, mid=34.10, iv=0.47, delta=0.57,
-                            iv_hv=0.98, iv_hv_label="fair", open_interest=200, spread_pct=0.02, breakeven=254.10),
-        ],
+        sample=[candidate],
     )
     defaults.update(overrides)
     return LeapsScan(**defaults)
@@ -53,42 +54,76 @@ def _wheel_scan(**overrides):
 
 
 class TestRenderLeaps:
-    def test_candidate_row_is_compact_single_line_with_breakeven(self):
+    def test_row_is_compact_with_exact_iv_hv_and_breakeven(self):
         body = _render_leaps(_leaps_scan())
-        # No wide multi-column table that could wrap on a phone -- just one
-        # self-labeled line per candidate, now including breakeven.
-        assert "$220C  $34.10  Δ0.57  fair  BE $254.10" in body
+        # No wide multi-column table, and no expiration repeated inline on
+        # every row (that was the "too wide" complaint) -- expiration is a
+        # header once per group, and each row is a narrow single line with
+        # the exact ratio number shown alongside the band label.
+        assert "$220C  $34.10  Δ0.57  0.98 fair  BE $254.10" in body
+
+    def test_expiration_header_shown_in_months(self):
+        body = _render_leaps(_leaps_scan())
+        assert "2027-12-17" in body and "(17mo)" in body
+        # the expiration must NOT be repeated on the candidate row itself
+        assert "$220C 2027-12-17" not in body
 
     def test_be_legend_explains_the_abbreviation(self):
         body = _render_leaps(_leaps_scan())
         assert "BE = breakeven price" in body
 
     def test_no_legend_when_no_candidates(self):
-        body = _render_leaps(_leaps_scan(candidates=[]))
+        body = _render_leaps(_leaps_scan(sample=[]))
         assert "BE =" not in body
 
-    def test_groups_candidates_by_expiration(self):
+    def test_multiple_expirations_each_get_their_own_header_and_rows(self):
         from app.options.leaps import LeapsCandidate
-        scan = _leaps_scan(candidates=[
-            LeapsCandidate(expiration="2027-06-17", dte=330, strike=205.0, mid=38.20, iv=0.47,
-                            delta=0.61, iv_hv=1.19, iv_hv_label="fair", breakeven=243.20,
-                            open_interest=100, spread_pct=0.02),
-            LeapsCandidate(expiration="2027-12-17", dte=513, strike=205.0, mid=47.22, iv=0.46,
-                            delta=0.66, iv_hv=1.18, iv_hv_label="fair", breakeven=252.22,
-                            open_interest=100, spread_pct=0.02),
-        ])
+        c1 = LeapsCandidate(expiration="2027-06-17", dte=330, strike=205.0, mid=38.20, iv=0.47,
+                             delta=0.61, iv_hv=1.19, iv_hv_label="fair", breakeven=243.20,
+                             open_interest=100, spread_pct=0.02)
+        c2 = LeapsCandidate(expiration="2027-12-17", dte=513, strike=205.0, mid=47.22, iv=0.46,
+                             delta=0.66, iv_hv=1.18, iv_hv_label="fair", breakeven=252.22,
+                             open_interest=100, spread_pct=0.02)
+        scan = _leaps_scan(sample=[c1, c2])
         body = _render_leaps(scan)
-        assert "2027-06-17" in body and "(11mo)" in body
-        assert "2027-12-17" in body and "(17mo)" in body
+        assert "11mo" in body and "17mo" in body
+        assert "$205C  $38.20" in body
+        assert "$205C  $47.22" in body
 
     def test_no_candidates_uses_actual_configured_band(self):
-        body = _render_leaps(_leaps_scan(candidates=[], delta_min=0.35, delta_max=0.70))
+        body = _render_leaps(_leaps_scan(sample=[], delta_min=0.35, delta_max=0.70))
         assert "delta (0.35-0.70)" in body
 
     def test_error_short_circuits_rendering(self):
         body = _render_leaps(_leaps_scan(error="no options chain available"))
         assert "no options chain available" in body
         assert "$220C" not in body
+
+
+class TestHighlightClosingVerdict:
+    def test_bolds_the_closing_verdict_line(self):
+        text = ("The $220C 2027-12-17 strike looks attractive given fair IV/HV.\n"
+                "TRADE — the $220C 2027-12-17 strike offers the best value here.")
+        out = _highlight_closing_verdict(text)
+        assert out.endswith("<b>TRADE — the $220C 2027-12-17 strike offers the best value here.</b>")
+        assert out.startswith("The $220C 2027-12-17 strike looks attractive given fair IV/HV.\n")
+
+    def test_only_bolds_the_last_matching_line_not_earlier_mentions(self):
+        text = ("Some analysts say TRADE — but here the setup is weak, so we disagree.\n"
+                "HOLD — wait for a better entry before committing capital.")
+        out = _highlight_closing_verdict(text)
+        assert out.count("<b>") == 1
+        assert "<b>HOLD — wait for a better entry before committing capital.</b>" in out
+        assert "<b>Some analysts say TRADE" not in out
+
+    def test_no_trade_verdict_recognized(self):
+        text = "The premium isn't worth the risk here.\nNO TRADE — richly priced with no edge."
+        out = _highlight_closing_verdict(text)
+        assert "<b>NO TRADE — richly priced with no edge.</b>" in out
+
+    def test_no_matching_line_returns_text_unchanged(self):
+        text = "Just some plain analysis text with no closing verdict line."
+        assert _highlight_closing_verdict(text) == text
 
 
 class TestRenderWheel:

@@ -7,6 +7,7 @@ import httpx
 import pytz
 from app.fundamentals import format_pe
 from app.indicators.engine import IndicatorResult
+from app.valuation import format_valuation
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ def signal_line(r: IndicatorResult) -> str:
 def _block(r: IndicatorResult) -> str:
     rows = [f"{label:<10}  {html.escape(sig.display)}" for _, label, sig in r.signals]
     rows.append(f"{'P/E':<10}  {format_pe(r.trailing_pe, r.forward_pe)}")
+    rows.append(f"{'Valuation':<10}  {html.escape(format_valuation(r.valuation))}")
 
     # Rules with an empty reason don't apply to the current side — hidden.
     applicable = [(n, p, re) for n, p, re in r.rule_results if re]

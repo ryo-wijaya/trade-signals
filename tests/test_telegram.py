@@ -1,6 +1,7 @@
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
 from app.telegram import _call, build_priority_alert, build_stock_messages, signal_line, split_message
+from app.valuation import ValuationResult, HistoricalBand
 
 
 def _result(rev: list[int], trend: list[int] = (-1, -1)) -> IndicatorResult:
@@ -58,6 +59,23 @@ class TestStockMessages:
         body = build_stock_messages([r], "now")[1]
         assert "Structure" in body
         assert "Volume" not in body
+
+    def test_valuation_row_shown_when_present(self):
+        r = _result([1, 1, 0])
+        r.valuation = ValuationResult(
+            ticker="TEST", peg=0.57, peg_label="cheap",
+            pe_band=HistoricalBand(low=39, high=112, median=46, n=4, label="cheap"),
+            verdict="cheap",
+        )
+        body = build_stock_messages([r], "now")[1]
+        assert "Valuation" in body
+        assert "cheap  (PE cheap · PEG 0.57 cheap)" in body
+
+    def test_valuation_row_shows_insufficient_data_when_absent(self):
+        r = _result([1, 1, 0])  # r.valuation defaults to None
+        body = build_stock_messages([r], "now")[1]
+        assert "Valuation" in body
+        assert "insufficient data" in body
 
 
 class TestSignalLine:

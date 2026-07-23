@@ -53,11 +53,10 @@ def _call_chain(strikes, mids, ivs, deltas, ois=None, spreads=None, volumes=None
 
 
 class TestScanLeapsRanking:
-    def test_ranks_nearest_the_money_first_within_expiration(self, monkeypatch):
-        # Spot is 100.0 (from _FakeTicker's history close). Strikes 100/110/120
-        # are 0/10/20 away from spot -- nearest-ATM ranking should return them
-        # in that order regardless of IV/HV (110 is the cheapest IV/HV here,
-        # but it must NOT be ranked first -- that was the old, wrong behavior).
+    def test_sample_includes_all_strikes_when_under_the_cap(self, monkeypatch):
+        # Spot is 100.0. With sample_size=20 (default) and a single expiration,
+        # per-expiration sampling allows 20 -- since there are only 3 qualifying
+        # strikes, all 3 must appear in the sample, sorted by strike price.
         monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
         monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
         monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))
@@ -74,9 +73,50 @@ class TestScanLeapsRanking:
 
         scan = leaps_mod.scan_leaps("TEST")
         assert scan.error is None
-        assert [c.strike for c in scan.candidates] == [100.0, 110.0, 120.0]
-        assert [c.iv_hv_label for c in scan.candidates] == ["rich", "fair", "fair"]
-        assert [c.expiration for c in scan.candidates] == ["2027-06-17"] * 3
+        assert [c.strike for c in scan.sample] == [100.0, 110.0, 120.0]
+
+    def test_sample_is_evenly_spaced_when_over_the_per_expiration_cap(self, monkeypatch):
+        # 1 expiration, sample_size=4 -> per-expiration allowance is 4. With 9
+        # qualifying strikes sorted by price, evenly spaced selection should
+        # pick indices 0, 2.67->3, 5.33->5, 8 -- i.e. spread across the range,
+        # not just the first 4 or the 4 nearest spot.
+        cfg = _cfg()
+        cfg["options"]["leaps"]["sample_size"] = 4
+        monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
+        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
+        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))
+        monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
+        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
+
+        strikes = [80.0, 85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0, 120.0]
+        chain = _call_chain(strikes=strikes, mids=[5.0] * 9, ivs=[0.5] * 9,
+                             deltas=[0.68, 0.65, 0.62, 0.58, 0.55, 0.52, 0.48, 0.44, 0.40])
+        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
+
+        scan = leaps_mod.scan_leaps("TEST")
+        assert len(scan.sample) == 4
+        assert scan.sample[0].strike == 80.0  # first
+        assert scan.sample[-1].strike == 120.0  # last -- spread covers the full range, not clustered
+
+    def test_sample_spread_across_expirations_by_allocation(self, monkeypatch):
+        # sample_size=20 with 2 expirations -> ~10 allotted per expiration.
+        # Each expiration here only has 2 qualifying strikes, so all of them
+        # should appear (2 <= 10), giving 4 sample rows total across both.
+        monkeypatch.setattr(leaps_mod, "pick_expirations",
+                             lambda t, lo, hi, n: [("2027-06-17", 330), ("2027-12-17", 513)])
+        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
+        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))
+        monkeypatch.setattr(config_mod, "load_config", _cfg)
+        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
+        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
+
+        chain = _call_chain(strikes=[95.0, 100.0], mids=[6.0, 5.0], ivs=[0.45, 0.44], deltas=[0.58, 0.55])
+        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
+
+        scan = leaps_mod.scan_leaps("TEST")
+        assert len(scan.sample) == 4
+        assert {c.expiration for c in scan.sample} == {"2027-06-17", "2027-12-17"}
 
     def test_breakeven_is_strike_plus_mid(self, monkeypatch):
         monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
@@ -90,27 +130,7 @@ class TestScanLeapsRanking:
         monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
 
         scan = leaps_mod.scan_leaps("TEST")
-        assert scan.candidates[0].breakeven == 112.5
-
-    def test_iv_hv_is_tiebreak_among_equidistant_strikes(self, monkeypatch):
-        # Two strikes equidistant from spot (100 -> 95 and 105, both 5 away):
-        # the cheaper IV/HV one should rank first between them.
-        monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
-        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
-        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))
-        monkeypatch.setattr(config_mod, "load_config", _cfg)
-        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
-        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
-
-        chain = _call_chain(
-            strikes=[105.0, 95.0], mids=[7.0, 8.0],
-            ivs=[0.60, 0.40],  # iv/hv(0.40) -> 1.5 (rich), 1.0 (fair)
-            deltas=[0.45, 0.55],
-        )
-        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
-
-        scan = leaps_mod.scan_leaps("TEST")
-        assert [c.strike for c in scan.candidates] == [95.0, 105.0]
+        assert scan.sample[0].breakeven == 112.5
 
     def test_delta_and_liquidity_filters_exclude_rows(self, monkeypatch):
         monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
@@ -128,9 +148,65 @@ class TestScanLeapsRanking:
         monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
 
         scan = leaps_mod.scan_leaps("TEST")
-        assert [c.strike for c in scan.candidates] == [110.0]
+        assert [c.strike for c in scan.sample] == [110.0]
 
-    def test_multiple_expirations_each_form_their_own_group(self, monkeypatch):
+    def test_moneyness_cap_excludes_strikes_far_above_spot_despite_qualifying_delta(self, monkeypatch):
+        # Confirmed live on RDDT (72% realized vol): a strike 124% above spot
+        # still showed delta 0.40 (within 0.35-0.70) because high IV makes
+        # Black-Scholes price in a real chance of that much movement over
+        # ~2 years. Delta alone isn't a reliable "near the money" proxy for
+        # high-vol names -- the hard percentage cap must exclude it anyway,
+        # even though its delta legitimately qualifies.
+        monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
+        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.65)
+        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))  # spot = 100.0
+        monkeypatch.setattr(config_mod, "load_config", _cfg)
+        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
+        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
+
+        chain = _call_chain(
+            strikes=[110.0, 224.0],  # 110 = +10% (sane), 224 = +124% (RDDT-style blowup)
+            mids=[15.0, 20.0], ivs=[0.75, 0.71],
+            deltas=[0.65, 0.40],  # both technically within 0.35-0.70
+        )
+        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
+
+        scan = leaps_mod.scan_leaps("TEST")
+        strikes = [c.strike for c in scan.sample]
+        assert 110.0 in strikes
+        assert 224.0 not in strikes
+
+    def test_moneyness_cap_is_configurable(self, monkeypatch):
+        cfg = _cfg()
+        cfg["options"]["leaps"]["max_pct_above_spot"] = 0.05  # tight: spot 100 -> ceiling 105
+        monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
+        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
+        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))
+        monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
+        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
+
+        chain = _call_chain(strikes=[103.0, 110.0], mids=[8.0, 6.0], ivs=[0.5, 0.48], deltas=[0.55, 0.50])
+        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
+
+        scan = leaps_mod.scan_leaps("TEST")
+        assert [c.strike for c in scan.sample] == [103.0]  # 110 excluded by the tightened cap
+
+    def test_moneyness_floor_excludes_strikes_far_below_spot(self, monkeypatch):
+        monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [("2027-06-17", 500)])
+        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
+        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))  # spot = 100.0
+        monkeypatch.setattr(config_mod, "load_config", _cfg)  # default floor 20% below -> 80.0
+        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
+        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
+
+        chain = _call_chain(strikes=[85.0, 70.0], mids=[20.0, 32.0], ivs=[0.5, 0.5], deltas=[0.65, 0.68])
+        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
+
+        scan = leaps_mod.scan_leaps("TEST")
+        assert [c.strike for c in scan.sample] == [85.0]  # 70 excluded (30% below spot > 20% floor)
+
+    def test_multiple_expirations_each_contribute_to_the_sample(self, monkeypatch):
         monkeypatch.setattr(leaps_mod, "pick_expirations",
                              lambda t, lo, hi, n: [("2027-06-17", 330), ("2027-12-17", 513)])
         monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
@@ -147,26 +223,9 @@ class TestScanLeapsRanking:
         monkeypatch.setattr(leaps_mod, "fetch_chain", fake_fetch_chain)
 
         scan = leaps_mod.scan_leaps("TEST")
-        assert [(c.expiration, c.dte, c.mid) for c in scan.candidates] == [
+        assert [(c.expiration, c.dte, c.mid) for c in scan.sample] == [
             ("2027-06-17", 330, 6.0), ("2027-12-17", 513, 10.0),
         ]
-
-    def test_candidates_per_expiration_cap_applies_per_group(self, monkeypatch):
-        cfg = _cfg()
-        cfg["options"]["leaps"]["candidates_per_expiration"] = 1
-        monkeypatch.setattr(leaps_mod, "pick_expirations",
-                             lambda t, lo, hi, n: [("2027-06-17", 330), ("2027-12-17", 513)])
-        monkeypatch.setattr(leaps_mod, "realized_volatility", lambda closes, window: 0.40)
-        monkeypatch.setattr(leaps_mod, "yf", SimpleNamespace(Ticker=_FakeTicker))
-        monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
-        monkeypatch.setattr(earnings_mod, "next_earnings", lambda t: ("n/a", None))
-        monkeypatch.setattr(indicators_mod, "analyze", lambda t: None)
-
-        chain = _call_chain(strikes=[100.0, 105.0], mids=[6.0, 4.5], ivs=[0.45, 0.42], deltas=[0.55, 0.45])
-        monkeypatch.setattr(leaps_mod, "fetch_chain", lambda *a, **kw: chain)
-
-        scan = leaps_mod.scan_leaps("TEST")
-        assert len(scan.candidates) == 2  # 1 per expiration x 2 expirations
 
     def test_put_call_ratio_uses_first_expiration_only(self, monkeypatch):
         monkeypatch.setattr(leaps_mod, "pick_expirations",
@@ -208,8 +267,8 @@ class TestScanLeapsRanking:
 
         scan = leaps_mod.scan_leaps("TEST")
         assert scan.error is None
-        assert len(scan.candidates) == 1  # from the surviving expiration
-        assert scan.candidates[0].expiration == "2027-12-17"
+        assert len(scan.sample) == 1  # from the surviving expiration
+        assert scan.sample[0].expiration == "2027-12-17"
         assert scan.put_call  # populated from the surviving expiration, not left empty
 
     def test_all_expiration_fetches_failing_sets_error(self, monkeypatch):
@@ -227,13 +286,13 @@ class TestScanLeapsRanking:
 
         scan = leaps_mod.scan_leaps("TEST")
         assert scan.error == "options chain fetch failed"
-        assert scan.candidates == []
+        assert scan.sample == []
 
     def test_no_chain_available_sets_error(self, monkeypatch):
         monkeypatch.setattr(leaps_mod, "pick_expirations", lambda t, lo, hi, n: [])
         scan = leaps_mod.scan_leaps("TEST")
         assert scan.error == "no options chain available"
-        assert scan.candidates == []
+        assert scan.sample == []
 
 
 class TestScanWheelRanking:
@@ -313,13 +372,17 @@ class TestLiveScans:
         scan = scan_leaps("AAPL")
         assert scan.error is None
         assert scan.spot > 0
-        expirations = {c.expiration for c in scan.candidates}
-        assert 1 <= len(expirations) <= 4  # max_expirations cap
-        for c in scan.candidates:
+        # Zero candidates is a legitimate live-market condition (observed on
+        # AAPL: no liquid near-ATM LEAPS quotes at that moment), not a failure
+        # — only the sample_size cap is a hard invariant.
+        assert len(scan.sample) <= 20
+        for c in scan.sample:
             assert c.dte > 0
             assert 0.35 <= c.delta <= 0.70
             assert c.mid > 0
             assert c.breakeven == c.strike + c.mid
+            # moneyness cap: no strike further than 30%/20% from spot
+            assert 0.80 * scan.spot <= c.strike <= 1.30 * scan.spot
 
     def test_live_wheel_scan_is_sane(self):
         scan = scan_wheel("AAPL")

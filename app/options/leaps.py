@@ -36,11 +36,29 @@ class LeapsScan:
     hv: float | None
     delta_min: float = 0.35
     delta_max: float = 0.70
-    candidates: list[LeapsCandidate] = field(default_factory=list)  # ascending by (expiration, distance from spot)
+    # A readable sample spread evenly across both time (expirations) and
+    # moneyness (strikes within each expiration) — every qualifying strike
+    # was analyzed, this is a representative cross-section for display AND
+    # the pool the AI reasons over to pick its own top 3 (see llm.build_leaps_prompt).
+    sample: list[LeapsCandidate] = field(default_factory=list)
     put_call: dict = field(default_factory=dict)
     next_earnings: date | None = None
     indicator: "IndicatorResult | None" = None
     error: str | None = None
+
+
+def _evenly_spaced(items: list, n: int) -> list:
+    """n indices spread as evenly as possible across items (by position),
+    e.g. picking 5 out of 21 gives items[0], [5], [10], [15], [20]."""
+    if n <= 0 or not items:
+        return []
+    if len(items) <= n:
+        return list(items)
+    if n == 1:
+        return [items[0]]
+    step = (len(items) - 1) / (n - 1)
+    indices = sorted({round(i * step) for i in range(n)})
+    return [items[i] for i in indices]
 
 
 def scan_leaps(ticker: str) -> LeapsScan:
@@ -55,8 +73,10 @@ def scan_leaps(ticker: str) -> LeapsScan:
     min_oi = cfg.get("min_open_interest", 10)
     max_spread = cfg.get("max_spread_pct", 0.15)
     hv_window = cfg.get("hv_window_days", 90)
-    max_expirations = cfg.get("max_expirations", 4)
-    per_expiration = cfg.get("candidates_per_expiration", 3)
+    max_expirations = cfg.get("max_expirations", 12)
+    sample_size = cfg.get("sample_size", 20)
+    max_pct_above = cfg.get("max_pct_above_spot", 0.30)
+    max_pct_below = cfg.get("max_pct_below_spot", 0.20)
 
     expirations = pick_expirations(ticker, min_days, max_days, max_expirations)
     if not expirations:
@@ -77,9 +97,22 @@ def scan_leaps(ticker: str) -> LeapsScan:
                           delta_min=delta_min, delta_max=delta_max,
                           error="price fetch failed")
 
-    candidates: list[LeapsCandidate] = []
+    # Hard moneyness cap, independent of delta. Delta alone is not a reliable
+    # "near the money" proxy for high-volatility names on long-dated options:
+    # confirmed live on RDDT (72% realized vol) — a strike 124% above spot
+    # still showed delta 0.40 (within the 0.35-0.70 band) because Black-Scholes
+    # correctly prices in a real chance of that much movement over ~2 years.
+    # That's mathematically fine but not what "near the money" should mean for
+    # a retail LEAPS buyer — a stock could be acquired, guidance could disappoint,
+    # etc., and a strike that far out is a lottery ticket, not a swing trade.
+    strike_floor = spot * (1 - max_pct_below)
+    strike_ceiling = spot * (1 + max_pct_above)
+
+    sample: list[LeapsCandidate] = []
     put_call = {}
     any_chain_fetched = False
+    per_expiration_sample = max(1, round(sample_size / len(expirations)))
+
     for expiration, dte in expirations:
         try:
             chain = fetch_chain(ticker, expiration, spot, dte)
@@ -92,10 +125,14 @@ def scan_leaps(ticker: str) -> LeapsScan:
             # necessarily the first one in the list (that one may have failed).
             put_call = put_call_ratio(chain)
 
+        # Every qualifying strike is analyzed here — no per-expiration sampling
+        # at the analysis stage. Sampling only happens afterward, for display.
         calls = chain[chain["type"] == "call"].copy()
         calls = calls[
             calls["delta"].notna()
             & calls["delta"].between(delta_min, delta_max)
+            & (calls["strike"] >= strike_floor)
+            & (calls["strike"] <= strike_ceiling)
             & (calls["openInterest"].fillna(0) >= min_oi)
             & liquid_mask(calls, max_spread)
         ]
@@ -115,12 +152,10 @@ def scan_leaps(ticker: str) -> LeapsScan:
                 spread_pct=float(row["spread_pct"]),
                 breakeven=float(row["strike"]) + float(row["mid"]),
             ))
-        # Nearest-the-money first within this expiration — the point is capturing
-        # gamma-driven price movement over a multi-month hold, not stock-replacement
-        # leverage or far-OTM cheapness. IV/HV cheapness is the tiebreak among
-        # similarly-ATM strikes, not the primary sort.
-        rows.sort(key=lambda c: (abs(c.strike - spot), c.iv_hv is None, c.iv_hv if c.iv_hv is not None else 0))
-        candidates.extend(rows[:per_expiration])
+        if not rows:
+            continue
+        rows.sort(key=lambda c: c.strike)
+        sample.extend(_evenly_spaced(rows, per_expiration_sample))
 
     if not any_chain_fetched:
         return LeapsScan(ticker=ticker, spot=spot, hv=hv,
@@ -139,6 +174,7 @@ def scan_leaps(ticker: str) -> LeapsScan:
     return LeapsScan(
         ticker=ticker, spot=spot, hv=hv,
         delta_min=delta_min, delta_max=delta_max,
-        candidates=candidates, put_call=put_call, next_earnings=earnings_date,
+        sample=sample,
+        put_call=put_call, next_earnings=earnings_date,
         indicator=indicator,
     )

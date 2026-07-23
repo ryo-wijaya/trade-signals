@@ -51,12 +51,35 @@ _DEFAULTS = {
         "leaps": {
             "min_days": 365, "max_days": 730, "delta_min": 0.35, "delta_max": 0.70,
             "min_open_interest": 10, "max_spread_pct": 0.15, "hv_window_days": 90,
-            "max_expirations": 4, "candidates_per_expiration": 3,
+            "max_expirations": 12, "sample_size": 20,
+            "max_pct_above_spot": 0.30, "max_pct_below_spot": 0.20,
         },
         "wheel": {
             "min_days": 7, "max_days": 21, "delta_min": 0.15, "delta_max": 0.30,
             "min_open_interest": 10, "max_spread_pct": 0.15,
         },
+        "snapshot": {
+            "min_days": 30, "max_days": 45,
+        },
+        "leaps_alert": {
+            "iv_hv_threshold": 0.9,
+        },
+    },
+    "portfolio": {
+        "account_size": 10000,
+        "risk_per_trade_pct": 0.01,
+        "stop_vol_multiple": 2.0,
+    },
+    "relative_strength": {
+        "window_days": 20,
+        "benchmark": "SPY",
+    },
+    "valuation": {
+        "history_period": "6y",
+        "peg_cheap_threshold": 1.0,
+        "peg_expensive_threshold": 2.0,
+        "band_cheap_position": 0.3333,
+        "band_expensive_position": 0.6667,
     },
     "data": {
         "history_period": "400d",
@@ -74,6 +97,8 @@ _DEFAULTS = {
         "minute_offset": 5,
         "morning_report_hour": 10,
         "morning_report_minute": 0,
+        "leaps_alert_hour": 10,
+        "leaps_alert_minute": 30,
         "valid_priority_intervals": [15, 30, 60],
         "priority_min_signals": 2,
     },
@@ -87,10 +112,12 @@ _DEFAULTS = {
     "llm": {
         "model": "perplexity/sonar-pro",
         "max_tokens": 160,
-        "detailed_max_tokens": 220,
+        "detailed_max_tokens": 320,
         "portfolio_max_tokens": 1000,
         "news_max_tokens": 700,
         "options_max_tokens": 260,
+        "leaps_max_tokens": 700,
+        "deepdive_max_tokens": 1500,
     },
 }
 

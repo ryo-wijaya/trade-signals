@@ -2,12 +2,16 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import yfinance as yf
 
 from app.indicators.base import BaseIndicator, SignalResult
 from app.rules import apply_rules
+
+if TYPE_CHECKING:
+    from app.valuation import ValuationResult
 
 log = logging.getLogger(__name__)
 _INDICATORS: list[BaseIndicator] = []
@@ -27,6 +31,8 @@ class IndicatorResult:
     rule_results: list[tuple[str, bool, str]] = field(default_factory=list)  # (name, passed, reason)
     trailing_pe: float | None = None
     forward_pe: float | None = None
+    valuation: "ValuationResult | None" = None
+    fundamentals: dict = field(default_factory=dict)  # growth/margins/analyst consensus, see app.fundamentals
 
     @property
     def reversion_signals(self) -> list[tuple[str, str, SignalResult]]:
@@ -112,15 +118,18 @@ def _fetch_ohlcv(ticker: str) -> pd.DataFrame:
 
 
 def analyze(ticker: str) -> IndicatorResult:
-    from app.fundamentals import get_pe
+    from app.fundamentals import get_fundamentals
+    from app.valuation import get_valuation
     df = _fetch_ohlcv(ticker)
     price = float(df["Close"].iloc[-1])
     prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else price
     signals = [(ind.name, ind.label, ind.compute(df)) for ind in _INDICATORS]
-    trailing_pe, forward_pe = get_pe(ticker)
+    fundamentals = get_fundamentals(ticker)
+    valuation = get_valuation(ticker)
     result = IndicatorResult(
         ticker=ticker, price=price, prev_close=prev_close, signals=signals,
-        trailing_pe=trailing_pe, forward_pe=forward_pe,
+        trailing_pe=fundamentals["trailing_pe"], forward_pe=fundamentals["forward_pe"],
+        valuation=valuation, fundamentals=fundamentals,
     )
     result.rules_passed, result.rule_results = apply_rules(df, result)
     return result

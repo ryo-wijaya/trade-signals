@@ -244,3 +244,5 @@ def test_live_aapl_result_is_sane():
     for _, _, sig in r.signals:
         assert sig.signal in (-1, 0, 1)
         assert sig.display
+    assert r.valuation is not None
+    assert r.valuation.verdict in {"cheap", "fair", "expensive", "insufficient data"}

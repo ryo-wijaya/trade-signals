@@ -9,10 +9,11 @@
 
 ## How it works
 
-Three background jobs run automatically:
+Four background jobs run automatically:
 
-- **Morning report** — every trading day, 30 minutes after the open (10:00am ET fixed): detailed signals, a fuller AI fundamental summary, and a news digest, for your **favourites only**. This is the one automatic report and is not manually triggerable — it always runs, on its own schedule, with no `/interval`-style knob. For an on-demand version any time, use `/signalsplus` (any scope) or `/news`.
+- **Morning report** — every trading day, 30 minutes after the open (10:00am ET fixed): detailed signals, a fuller AI fundamental summary, a Relative Strength ranking, a Cheap Right Now list (only when at least one favourite reads cheap vs its own history), and a news digest, for your **favourites only**. This is the one automatic report and is not manually triggerable — it always runs, on its own schedule, with no `/interval`-style knob. For an on-demand version any time, use `/signalsplus` (any scope), `/cheap fav`, or `/news`.
 - **Priority alert** — runs every 30 minutes during market hours. Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought AND the side's confirmation passes: bounce structure for buys, above-average volume for sells (gates are asymmetric — backtesting showed each gate only helps its own side). Max one alert per stock per direction per day. Mon–Fri only.
+- **Cheap LEAPS alert** — runs once daily at 10:30am ET (`scheduler.leaps_alert_hour`/`leaps_alert_minute`), Mon–Fri. Scans favourites' LEAPS chains the same way `/options leaps` does, but only sends a message for tickers where something actually cleared the "cheap" bar (IV/HV below `options.leaps_alert.iv_hv_threshold`, default 0.9) — turning the scanner from something you have to remember to check into something that finds you. Max one alert per ticker per day.
 - **Earnings calendar** — sends next earnings dates for all watchlist tickers every Saturday midnight SGT.
 
 Priority alert interval is configurable at runtime via `/priority`. The morning report time is fixed (`scheduler.morning_report_hour`/`morning_report_minute` in `config.json`) since there's no meaningful "interval" for a once-a-day report — an earlier version tried to expose a batch-report interval via `/interval`, but since the app moved to daily bars that interval was silently ignored by the scheduler (it always fired once at market close regardless of what you set). `/interval` has been removed rather than left dangling.
@@ -43,11 +44,15 @@ MACD was deliberately not added: it is another trend-following momentum vote, an
 
 **Signal line**: every stock message and alert ends with a plain-English state derived from the backtest findings — `BUY/SELL ENTRY` when a ±2 trigger has its side's confirmation (act on it, 10–20 trading day swing horizon), `setup` when the trigger fired but confirmation is missing (watch, don't enter), or `none` when there's no edge. Only the rule relevant to the current side is shown in the report.
 
-**AI summary** (`/signalsplus`, the morning report, `/portfolioanalysis`): the LLM receives all indicator readings, the trend regime, and the signal state, and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), framed as multi-week swing decisions, with a downtrend flagged as falling-knife risk. Calls are capped at 3 concurrent with one retry on rate limits.
+**AI summary** (`/signalsplus`, the morning report, `/portfolioanalysis`): the LLM receives all indicator readings, the trend regime, the signal state, the valuation read below, and a fundamentals line (revenue/earnings growth, profit margin, analyst mean target and consensus — all from the same daily-cached fetch), and acts as a swing trader with the same rule — oversold + healthy fundamentals → BUY; overbought → SELL unless clearly undervalued; HOLD only when genuinely neutral. Replies are verdict-first (`BUY — reason`), framed as multi-week swing decisions, with a downtrend flagged as falling-knife risk. The detailed (`/signalsplus`/morning-report) variant must cite at least two specific numbers and is explicitly barred from naming the next earnings date as "the catalyst" unless it's within 2 weeks — and even then must say what specifically in that report matters; otherwise it has to name a real non-earnings development. Calls are capped at 3 concurrent with one retry on rate limits; if a summary fails while the API key is set, the message says so instead of silently omitting it.
 
 Signals use completed daily bars. If you request signals mid-day (while the US market is open), the current day's bar is partial and the signal may shift by close.
 
+**Valuation** (every report, `/portfolioanalysis`, `/deepdive`): a `Valuation` row next to P/E answers "cheap relative to what this stock usually trades at" — P/E and price/sales compared against the stock's own ~4-year history, plus PEG. Context only, never scored, same as P/E. See the "Valuation" section below for the full methodology and disclosed simplifications.
+
 **Options scanners** (`/options leaps` and `/options wheel`): two independent scanners over the live options chain, each with a per-ticker AI summary. See the "Options module" section below for the full design, ranking formulas, and — importantly — the data-accuracy limitations (there is no free historical-IV feed, so "cheap"/"rich" is a realized-volatility proxy, not a true IV percentile).
+
+**Deep dive** (`/deepdive`): the same technical block as `/signalsplus`, but instead of a short summary the AI writes a long, structured report across seven areas — Technical Setup, Fundamentals & Valuation, Options & Sentiment, News & Catalysts, Competitive Position, Macro & Sector, and Key Risks — closing with one bolded `BUY`/`SELL`/`HOLD` line. The options section is a lightweight near-term ATM IV vs realized-volatility snapshot (`app/options/snapshot.py`), not the full LEAPS/wheel strike scan; news, competitor comparison, and macro context come from the model's own live web search, the same trick `/news` already relies on, so no new data-fetching code was needed for those. Meaningfully slower than other commands — one options snapshot fetch plus one long-form LLM call per ticker — so expect it to take longer, especially across several tickers.
 
 ## Setup
 
@@ -80,7 +85,7 @@ TELEGRAM_BOT_TOKEN=your_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 TELEGRAM_ALLOWED_CHAT_IDS=your_chat_id_here   # comma-separated; only these can run bot commands
 TRADE_SIGNALS_API_KEY=a_long_random_secret    # required to call the REST API; omit to disable auth in dev
-OPENROUTER_API_KEY=your_openrouter_key        # required for /signalsplus, /portfolioanalysis, /news, and the morning report; omit to disable all LLM features
+OPENROUTER_API_KEY=your_openrouter_key        # required for /signalsplus, /portfolioanalysis, /news, /options, /deepdive, and the morning report; omit to disable all LLM features
 ```
 
 **4. Run**
@@ -148,9 +153,14 @@ fly ssh console   # shell into the running container
 | `/signalsplus favourites` | Signals + LLM summary for favourited tickers only |
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
-| `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks |
+| `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks, plus a computed "cheap right now" list and position-sizing suggestion for oversold tickers |
+| `/cheap` | Which watchlist stocks read cheap vs their own history — raw numbers plus a deterministic data-backed explanation per stock |
+| `/cheap fav` | Same, favourites only (this is also what the morning report auto-appends) |
+| `/cheap NVDA CRM` | Same, for specific tickers |
 | `/news` | Most important recent news for your favourites and their sectors — routine/noise items filtered out |
-| `/options leaps` | Near-ATM long-dated call scan (1–2yr, multiple expirations, with breakeven) for favourites, ranked nearest-the-money first, with AI TRADE/HOLD/NO TRADE verdict |
+| `/deepdive` | /signalsplus with a long, structured 7-section AI research report (technicals, fundamentals, options, news, competitors, macro, risks) instead of a short summary, for favourites |
+| `/deepdive NVDA PFE` | Same, for specific tickers |
+| `/options leaps` | Near-ATM long-dated call scan analyzing every strike at every 1–2yr expiration, shown as an evenly-spread ~20-row sample, for favourites, with AI TRADE/HOLD/NO TRADE verdict at the bottom |
 | `/options leaps NVDA` | Same, for specific tickers |
 | `/options wheel` | Cash-secured-put scan (1–3 weeks out, ~2wk avg) for favourites, ranked by annualized yield, with AI TRADE/HOLD/NO TRADE verdict |
 | `/options wheel PFE` | Same, for specific tickers |
@@ -216,9 +226,31 @@ All settings live in `config.json`. Watchlist and priority-interval changes take
   "options": {
     "leaps": { "min_days": 365, "max_days": 730, "delta_min": 0.35, "delta_max": 0.70,
                "min_open_interest": 10, "max_spread_pct": 0.15, "hv_window_days": 90,
-               "max_expirations": 4, "candidates_per_expiration": 3 },
+               "max_expirations": 12, "sample_size": 20,
+               "max_pct_above_spot": 0.30, "max_pct_below_spot": 0.20 },
     "wheel": { "min_days": 7, "max_days": 21, "delta_min": 0.15, "delta_max": 0.30,
-               "min_open_interest": 10, "max_spread_pct": 0.15 }
+               "min_open_interest": 10, "max_spread_pct": 0.15 },
+    "snapshot": { "min_days": 30, "max_days": 45 },
+    "leaps_alert": { "iv_hv_threshold": 0.9 }
+  },
+
+  "portfolio": {
+    "account_size": 10000,
+    "risk_per_trade_pct": 0.01,
+    "stop_vol_multiple": 2.0
+  },
+
+  "relative_strength": {
+    "window_days": 20,
+    "benchmark": "SPY"
+  },
+
+  "valuation": {
+    "history_period": "6y",
+    "peg_cheap_threshold": 1.0,
+    "peg_expensive_threshold": 2.0,
+    "band_cheap_position": 0.3333,
+    "band_expensive_position": 0.6667
   },
 
   "data": {
@@ -238,6 +270,8 @@ All settings live in `config.json`. Watchlist and priority-interval changes take
     "minute_offset": 5,
     "morning_report_hour": 10,
     "morning_report_minute": 0,
+    "leaps_alert_hour": 10,
+    "leaps_alert_minute": 30,
     "valid_priority_intervals": [15, 30, 60],
     "priority_min_signals": 2
   },
@@ -252,10 +286,12 @@ All settings live in `config.json`. Watchlist and priority-interval changes take
   "llm": {
     "model": "perplexity/sonar-pro",
     "max_tokens": 160,
-    "detailed_max_tokens": 220,
+    "detailed_max_tokens": 320,
     "portfolio_max_tokens": 1000,
     "news_max_tokens": 700,
-    "options_max_tokens": 260
+    "options_max_tokens": 260,
+    "leaps_max_tokens": 700,
+    "deepdive_max_tokens": 1500
   }
 }
 ```
@@ -333,17 +369,62 @@ Sell alerts require the current bar's volume at or above its 20-day average (`ru
 
 ### LEAPS scanner
 
-`/options leaps [TICKER...]` (no ticker → favourites). Scans **every expiration** in `options.leaps.min_days`–`max_days` (365–730 days, i.e. 1–2yr), up to `max_expirations` (4) of them, **displayed in whole months** (e.g. "14mo") — so you can compare price and IV across the term structure (e.g. the same near-ATM strike at 14mo vs 18mo vs 23mo out) instead of seeing just one arbitrarily-picked expiration. Within each expiration, filters to **near-the-money** delta 0.35–0.70 with liquidity checks and ranks **nearest-strike-to-spot first** (IV/HV cheapness is only the tiebreak among similarly-ATM strikes, not the primary sort), showing up to `options.leaps.candidates_per_expiration` (3) strikes per expiration. The goal is capturing gamma-driven price movement over a multi-month hold (sell the option later, don't exercise it), not deep-ITM stock replacement or far-OTM leverage — ranking by cheapest IV/HV alone would happily surface a far-OTM strike at the edge of the delta band, which isn't what "near ATM" means. Calls only (LEAP puts are a specialized hedge case, out of scope).
+`/options leaps [TICKER...]` (no ticker → favourites). Analyzes **every qualifying strike** at **every expiration** in `options.leaps.min_days`–`max_days` (365–730 days, i.e. 1–2yr), up to `max_expirations` (12, effectively uncapped for realistic chains — nothing is pre-sampled or skipped at the analysis stage). A strike qualifies only if **both** filters pass: near-the-money delta 0.35–0.70 (liquidity-filtered), **and** a hard moneyness cap — strike between `max_pct_below_spot` (20%) below spot and `max_pct_above_spot` (30%) above spot.
 
-Each candidate shows its **BE** (breakeven price = strike + premium paid — the price the stock must reach by expiration just to break even) and an **IV/HV label** — the option's IV divided by the stock's own 90-day realized volatility, in 5 bands: `very cheap` (< 0.7), `cheap` (0.7–0.9), `fair` (0.9–1.3, a typical premium), `rich` (1.3–1.6), `very rich` (> 1.6, paying well above the stock's own recent volatility). Cheaper is more attractive to buy. Example: NVDA at $205, the near-ATM $205 call (14mo out) shows IV 46% against NVDA's 90-day realized volatility of 39% → IV/HV = 46/39 = 1.18 → `fair`, breakeven ≈ $205 + premium.
+The moneyness cap exists because **delta alone is not a reliable "near the money" proxy for high-volatility names on long-dated options** — confirmed live on RDDT (72% realized volatility): a strike **124% above spot** still computed delta 0.40, comfortably inside the 0.35–0.70 band, because Black-Scholes correctly prices in a real (if small) chance of that much movement over ~2 years at that volatility level. That's mathematically correct but not a reasonable "near ATM, expect to sell in a few months" trade for a retail buyer — a strike that far out is a lottery ticket on a huge, unlikely move (and carries real tail risk, e.g. an acquisition capping the stock's upside entirely). The hard percentage cap is applied independently of delta so this can't happen regardless of how volatile the underlying is.
 
-Each result also shows the ticker's current technical/fundamental rating, trend, and P/E, and next earnings date, then gets **one** AI verdict spanning all expirations shown (`llm.build_leaps_prompt`): `TRADE $<strike>C` (naming a specific strike/expiration), `HOLD`, or `NO TRADE`, each with a reason — the model is explicitly told it's fine (expected, even) to say HOLD or NO TRADE rather than force a pick when the numbers don't support one.
+The message shows a readable **sample** of about `sample_size` (20) strikes, spread evenly across both time (expirations) and moneyness (strikes within each expiration) — grouped by expiration header, one narrow row per strike (no wide multi-column table, no expiration repeated on every row), in whole months (e.g. "17mo"). Each row shows the **exact IV/HV ratio** next to its band label (e.g. "1.18 fair", not just the label) and **BE** (breakeven price = strike + premium paid — what the stock must reach by expiration just to break even). Scanning every expiration this way is what makes "longer expirations are sometimes too expensive" directly visible — you watch the premium grow from the nearest to the farthest expiration for the same strike. IV/HV bands, in 5 tiers: `very cheap` (< 0.7), `cheap` (0.7–0.9), `fair` (0.9–1.3, a typical premium), `rich` (1.3–1.6), `very rich` (> 1.6, paying well above the stock's own recent volatility). Example: NVDA at $205, the near-ATM $205 call (14mo out) shows IV 46% against NVDA's 90-day realized volatility of 39% → IV/HV = **1.18 fair**, breakeven ≈ $205 + premium. Calls only (LEAP puts are a specialized hedge case, out of scope).
+
+At the **bottom** of the message, the ticker's technical/fundamental rating, trend, P/E, and next earnings date are shown, then the AI writes a genuine, several-sentences-per-pick analysis (`llm.build_leaps_prompt`) intelligently weighing up to 3 of the best strikes to trade from the **full sample shown** — explicitly told **not** to just pick whichever has the lowest IV/HV, but to weigh together IV/HV cheapness or richness, whether a farther expiration's extra premium is actually worth the extra time bought (or a nearer one is better value), the technical/fundamental backdrop, earnings timing, and realistic risk (how far the strike sits from spot and how large a move it actually needs to pay off). It closes with exactly one bolded verdict line — `TRADE — summary`, `HOLD — summary`, or `NO TRADE — summary` — extracted from the reply by finding the *last* matching line (`app/commands/options.py:_highlight_closing_verdict`), since the analysis itself is long-form prose that may contain other dashes. **If you run the scan twice and get different results**, the two real causes are: (1) the market itself moved between calls (bid/ask/IV shift live during trading hours, changing the numbers), or (2) the AI is a live-search model (Perplexity Sonar Pro), so its retrieved context — and therefore its wording or verdict — can differ between calls even at temperature 0, since search results aren't a fixed corpus. The candidate *data* (the sample shown and fed to the AI) is deterministic for a fixed market snapshot; the AI's prose and final pick are not guaranteed byte-identical between calls, by design — it's meant to reason freshly over the shown candidates rather than mechanically rank them.
 
 ### Wheel scanner
 
 `/options wheel [TICKER...]` (no ticker → favourites). Scans cash-secured-put strikes 1–3 weeks out (averaging ~2 weeks), filters to delta magnitude 0.15–0.30, and ranks **descending by annualized yield** (`premium / (strike×100) × 365/DTE`) — the point of the wheel is collecting rich premium, so here a high IV/HV is desirable, the opposite of LEAPS. Shows the CSP entry leg only — the covered-call follow-through after assignment isn't scanned, since the app doesn't track your share ownership or cost basis. Same `TRADE $<strike>P` / `HOLD` / `NO TRADE` verdict format as LEAPS.
 
 **Earnings handling**: any candidate whose expiration falls on or after the next earnings date (i.e. you'd be holding the short put through the event) is flagged `⚠earnings`, not excluded — the richer premium is often real, but so is the gap risk, and it's shown as a deliberate choice rather than silently filtered.
+
+## Deep dive
+
+`/deepdive [TICKER...]` (no ticker → favourites). Same technical scan as `/signalsplus` — indicators, trend, P/E, priority alerts — but the AI summary is replaced with a structured, data-dense report (`llm.build_deepdive_prompt`, `llm.deepdive_max_tokens`, default 1500). The prompt hands the model **everything the app has already computed** — indicator readings with exact levels, trend regime, confirmation-gate results, day-over-day change, valuation-vs-history with actual ranges, growth/margin/analyst-consensus numbers, and the options snapshot — and instructs it to cite those numbers rather than re-derive them, spending its live search budget only on what the app can't compute (news, competitors, macro). Five sections, 1-3 sentences each, every claim anchored to a number or named fact: Technical Setup, Fundamentals & Valuation, Options & Sentiment, News/Catalysts & Competition (same no-lazy-earnings-catalyst rule as `/signalsplus`), and Risks & Macro. Then a **`Trade Plan:`** line naming a concrete entry zone — a specific price or range derived from the Bollinger/EMA/valuation levels in the prompt (deliberately no target or stop) — and one bolded `BUY`/`SELL`/`HOLD` closing verdict (same last-matching-line extraction as the LEAPS scanner).
+
+The options input is a lightweight **snapshot**, not a full strike scan: `app/options/snapshot.py:scan_snapshot` picks the nearest expiration in `options.snapshot.min_days`–`max_days` (30–45 days by default), reads the ATM call's IV, compares it against 90-day realized volatility, and adds the put/call volume ratio — enough context for the AI to reason about options-market sentiment without repeating the whole LEAPS/wheel scan. News, competitor comparison, and macro/sector context are **not** fetched by the app at all — the prompt tells the live-search model to search for them itself, the same approach `/news` already uses, so there's no new scraping or competitor-mapping code to maintain.
+
+This is the slowest command in the bot by design: one options snapshot fetch plus one long-form LLM call per ticker, so a multi-ticker `/deepdive` will take noticeably longer than `/signalsplus` on the same list — the initial "running deep dive…" message says so up front.
+
+## Valuation
+
+`app/valuation.py:get_valuation` answers "is this cheap **relative to itself**, not the market" — three independent, context-only reads (never scored, same tier as P/E), shown as a `Valuation` row in every signals/signalsplus/morning-report/priority-alert block, in `/deepdive`'s Fundamentals & Valuation section, and factored directly into `/portfolioanalysis` (including a dedicated "Cheap right now" list — the direct answer to "find cheap stocks from my portfolio").
+
+1. **P/E vs its own history** — current trailing P/E compared against the stock's own trailing P/E at each of its last ~4 fiscal year-ends. Critically, each historical point is priced against **that year's own diluted EPS**, not today's — using today's EPS against old prices would badly mislead for fast-growing names (confirmed live: NVDA's diluted EPS grew from $0.17 to $4.90 in 4 years; using current EPS against 2023's price would have made NVDA look absurdly cheap for the wrong reason). Annual EPS and revenue come from yfinance's free `income_stmt` (typically ~4-5 fiscal years; some tickers fewer). The **forward P/E is judged against the same band** (shown as e.g. `PE cheap, fwd very cheap`) — a forward multiple below the band means estimates imply the stock gets cheaper still if earnings arrive as forecast. The forward read is context only and doesn't vote in the overall verdict, keeping the 3-signal verdict stable.
+2. **PEG ratio** — P/E divided by earnings growth, the standard Peter Lynch heuristic: below `valuation.peg_cheap_threshold` (1.0) is cheap, above `peg_expensive_threshold` (2.0) is expensive. A single absolute read, no historical band needed since growth is already normalized in.
+3. **Price/sales vs its own history** — same historical-band methodology as #1, but with revenue instead of earnings. This is what still gives a real cheap/expensive read for **currently-unprofitable names where P/E is n/m** (confirmed live: RXRX has no trailing P/E at all, but its P/S of 23.8 sits below its entire 4-year historical P/S range of 28.9–117.9 → reads "cheap").
+
+Each historical band (P/E and P/S) is a simple low/median/high split of whatever fiscal years are available, classified by where the current multiple falls: bottom third `valuation.band_cheap_position` (1/3 default) is cheap, top third `band_expensive_position` (2/3 default) is expensive, middle is fair. The **overall verdict** (cheap/fair/expensive/insufficient data) is whichever reading has the most agreement among the signals that were actually computable — a tie reads "fair", and a ticker with zero computable signals (e.g. an ETF with no income statement, like IBIT) reads "insufficient data" rather than guessing.
+
+**Known simplifications, disclosed rather than hidden:**
+- Revenue-per-share for the P/S band divides past revenue by **today's** share count (yfinance has no historical share-count feed either) — buybacks/dilution over the years aren't reflected.
+- A single volatile fiscal year can skew a historical band (confirmed live: PFE's 2022 COVID-vaccine-driven EPS spike makes that year's historical P/E an outlier low — a real, disclosed limitation of trailing-PE-based history, not a bug).
+- A ~4-year lookback (yfinance's free-tier limit) is a coarse "recent trading range," not a rich multi-decade chart.
+
+This is meaningfully heavier than a plain P/E fetch — it pulls `valuation.history_period` (6 years default) of price history plus annual financials per ticker — so it's cached once per ticker per day, the same pattern as P/E (`app/fundamentals.py`). The first report of the day for each ticker takes a bit longer; every subsequent report that day is instant.
+
+### Cheap list
+
+`/cheap` (watchlist), `/cheap fav` (favourites), `/cheap TICKER...` — the direct answer to "which of my stocks are cheap right now" (`app/commands/cheap.py`). Lists only tickers whose overall valuation verdict is **cheap**, each with the raw numbers (trailing + forward P/E vs its own range, PEG, P/S vs its own range) and a plain-English explanation **assembled deterministically from that data** — e.g. *"Trailing P/E 19.7 is below its entire 4yr range (27.1–786.3), and the forward P/E of 10.5 is cheaper still."* Signals that don't agree are disclosed as a `Watch:` note (e.g. *"PEG 1.75 reads fair"*) rather than hidden. No AI involved — the same data always produces the same explanation, and it distinguishes "below the entire historical range" from merely "in the bottom third" since those are different strengths of cheapness. The favourites-scoped version is auto-appended to the morning report whenever at least one favourite qualifies.
+
+## Relative strength
+
+Shown in the **Morning Report** only (`app/relative_strength.py`): favourites ranked by (ticker's % return) minus (benchmark's % return) over `relative_strength.window_days` (20 trading days by default) against `relative_strength.benchmark` (SPY by default), strongest first. Purely computed from price history — no LLM involved, so it's fast and free. The point: when several favourites are oversold at the same time and capital is limited, the one that's held up best relative to the market is generally the better dip to buy first. A ticker whose return can't be computed (insufficient price history, a fetch failure, or the benchmark fetch itself failing) is silently skipped rather than erroring out the whole report.
+
+## Cheap LEAPS alert
+
+A daily push version of `/options leaps` (`app/scheduler.py:run_leaps_alert_check`, 10:30am ET weekdays by default via `scheduler.leaps_alert_hour`/`leaps_alert_minute`): scans every favourite's LEAPS chain exactly like the on-demand command, but only sends a message for tickers where at least one candidate in the shown sample has IV/HV below `options.leaps_alert.iv_hv_threshold` (default 0.9 — the "cheap"/"very cheap" bands). Reuses the same render (`_render_leaps`) and AI verdict (`build_leaps_prompt` + `_highlight_closing_verdict`) as the manual command when `OPENROUTER_API_KEY` is set; sends the data-only render without an AI call if it isn't. One alert per ticker per calendar day — re-arms the next day if it's still cheap, same convention as priority alerts. A ticker whose scan fails doesn't block the rest of the favourites list from being checked.
+
+Note the cheap-check only looks at the sample shown in the message (an evenly-spread ~20-row cross-section, not literally every strike on the chain) — consistent with how `/options leaps` already treats that sample as the effective candidate pool, but it means a cheap strike that fell outside the sampled rows could in theory go unnoticed.
+
+## Position sizing
+
+Appended to `/portfolioanalysis`, below the AI's Actions/Add/Risk write-up: a deterministic (not AI-generated) suggested share count for each watchlist ticker currently oversold (trigger score ≥ +1), computed by `app/sizing.py:suggest_position_size`. Risks `portfolio.risk_per_trade_pct` (1% default) of `portfolio.account_size` ($10,000 default) per trade, with the stop set `portfolio.stop_vol_multiple` (2x default) daily-volatility moves below entry — `shares = floor((account_size × risk_pct) / (price × (realized_vol / √252) × stop_vol_multiple))`. Uses the stock's own realized volatility as the volatility input (the same proxy used across the options module), not a true ATR(14) — a reasonable stand-in, not a precision risk-management tool. Computed in Python rather than asked of the LLM, on the same principle as PE and IV/HV elsewhere: the model narrates, it doesn't do precision arithmetic. **Edit `portfolio.account_size` and `risk_per_trade_pct` in `config.json` to match your actual account** — the defaults are placeholders.
 
 ## Backtesting
 

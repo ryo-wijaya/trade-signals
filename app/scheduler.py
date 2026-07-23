@@ -1,15 +1,20 @@
 import asyncio
 import html
 import logging
+import os
 from datetime import datetime
 import pytz
 
 log = logging.getLogger(__name__)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from app.commands.options import _render_leaps, _highlight_closing_verdict
 from app.config import load_watchlist, load_favourites, load_priority_interval, save_priority_interval
 from app.indicators import analyze_tickers, IndicatorResult
+from app.llm import build_leaps_prompt, openrouter_chat
 from app.market_calendar import is_trading_day
+from app.options import scan_leaps
+from app.relative_strength import rank_relative_strength, format_relative_strength
 from app.telegram import build_stock_messages, build_priority_alert, send, now_sgt
 
 _scheduler: BackgroundScheduler | None = None
@@ -79,12 +84,33 @@ def run_morning_report() -> None:
         if not results:
             return
         summaries = {}
+        has_llm = bool(os.getenv("OPENROUTER_API_KEY", ""))
         settled = await asyncio.gather(*[get_summary(r, detailed=True) for r in results], return_exceptions=True)
         for r, outcome in zip(results, settled):
             if isinstance(outcome, str) and outcome:
                 summaries[r.ticker] = outcome
+            elif has_llm:
+                # Key is set, so an empty/failed summary is a real failure —
+                # say so instead of silently omitting the section.
+                summaries[r.ticker] = "AI summary unavailable — check logs."
         for msg in build_stock_messages(results, now_sgt(), title="Morning Report", summaries=summaries):
             await send(msg)
+            await asyncio.sleep(0.3)
+
+        from app.config import load_config
+        rs_cfg = load_config().get("relative_strength", {})
+        window = rs_cfg.get("window_days", 20)
+        benchmark = rs_cfg.get("benchmark", "SPY")
+        ranked = await loop.run_in_executor(None, rank_relative_strength, targets, window, benchmark)
+        rs_msg = format_relative_strength(ranked, window, benchmark)
+        if rs_msg:
+            await send(rs_msg)
+            await asyncio.sleep(0.3)
+
+        from app.commands.cheap import build_cheap_report
+        cheap_msg = build_cheap_report(results, "favourites")
+        if cheap_msg:
+            await send(cheap_msg)
             await asyncio.sleep(0.3)
 
         news = await get_news_digest(targets)
@@ -146,11 +172,77 @@ def reschedule_priority(interval_minutes: int) -> None:
         _scheduler.reschedule_job("priority_check", trigger=_priority_trigger(interval_minutes))
 
 
+def _leaps_alert_trigger() -> CronTrigger:
+    cfg = _scfg()
+    hour = cfg.get("leaps_alert_hour", 10)
+    minute = cfg.get("leaps_alert_minute", 30)
+    return CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone=_tz())
+
+
+# ticker -> date last alerted; re-arms daily like _alerted above, so a strike
+# that stays cheap for a week alerts once per day rather than once ever.
+_leaps_alerted: dict[str, str] = {}
+
+
+def _cheap_candidates(scan, threshold: float) -> list:
+    return [c for c in scan.sample if c.iv_hv is not None and c.iv_hv < threshold]
+
+
+def run_leaps_alert_check() -> None:
+    """Daily push scan of favourites' LEAPS chains: alerts only on tickers
+    with at least one candidate cheap enough (iv_hv below the configured
+    threshold) to be worth a look, instead of requiring a manual /options
+    leaps check. Skips a ticker already alerted today."""
+    if not is_trading_day(datetime.now(_tz()).date()):
+        log.info("leaps_alert_check skipped: non-trading day")
+        return
+
+    from app.config import load_config
+    targets = load_favourites()
+    if not targets:
+        log.info("leaps_alert_check skipped: no favourites set")
+        return
+    log.info("leaps_alert_check started")
+
+    cfg = load_config()
+    threshold = cfg.get("options", {}).get("leaps_alert", {}).get("iv_hv_threshold", 0.9)
+    max_tokens = cfg.get("llm", {}).get("leaps_max_tokens", 700)
+    today = datetime.now(_tz()).strftime("%Y-%m-%d")
+    has_llm = bool(os.getenv("OPENROUTER_API_KEY", ""))
+
+    async def _send():
+        loop = asyncio.get_running_loop()
+        for ticker in targets:
+            if _leaps_alerted.get(ticker) == today:
+                continue
+            try:
+                scan = await loop.run_in_executor(None, scan_leaps, ticker)
+                if scan.error or not scan.sample:
+                    continue
+                if not _cheap_candidates(scan, threshold):
+                    continue
+
+                _leaps_alerted[ticker] = today
+                log.info("leaps_alert_check: %s has a cheap candidate (iv_hv < %.2f)", ticker, threshold)
+                body = _render_leaps(scan)
+                if has_llm:
+                    summary = await openrouter_chat(build_leaps_prompt(scan), max_tokens)
+                    if summary:
+                        body += "\n\n" + _highlight_closing_verdict(html.escape(summary))
+                await send(f"<b>Cheap LEAPS Alert</b>  {now_sgt()}\n\n{body}")
+                await asyncio.sleep(0.3)
+            except Exception as exc:
+                log.error("leaps_alert_check failed for %s: %s", ticker, exc)
+
+    _run(_send)
+
+
 def create_scheduler() -> BackgroundScheduler:
     global _scheduler
     _scheduler = BackgroundScheduler(timezone=_tz())
     _scheduler.add_job(run_morning_report, _morning_trigger(), id="morning_report")
     _scheduler.add_job(run_priority_check, _priority_trigger(load_priority_interval()), id="priority_check")
+    _scheduler.add_job(run_leaps_alert_check, _leaps_alert_trigger(), id="leaps_alert_check")
     _scheduler.add_job(
         run_earnings_report,
         CronTrigger(day_of_week="sat", hour=0, minute=0, timezone=pytz.timezone("Asia/Singapore")),

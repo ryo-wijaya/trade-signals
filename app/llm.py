@@ -55,23 +55,86 @@ _RULES = (
 )
 
 
+def _valuation_line(v) -> str:
+    """A sentence with real anchor numbers (not just labels) so the AI can
+    cite specifics — e.g. 'P/E 31.7 vs its own 4yr range 39-112 (cheap)' is a
+    concrete fact, not a vague claim. Empty if nothing was computable (ETFs,
+    unprofitable names with no usable history)."""
+    if v is None or v.verdict == "insufficient data":
+        return ""
+    parts = []
+    if v.pe_band:
+        pe_part = (f"P/E {v.trailing_pe:.1f} vs its own {v.pe_band.n}yr range "
+                   f"{v.pe_band.low:.0f}-{v.pe_band.high:.0f} ({v.pe_band.label})")
+        if v.forward_pe_label != "unknown":
+            pe_part += f", forward P/E {v.forward_pe:.1f} sits {v.forward_pe_label} in that same range"
+        parts.append(pe_part)
+    if v.peg is not None and v.peg_label != "unknown":
+        parts.append(f"PEG {v.peg:.2f} ({v.peg_label})")
+    if v.ps_band:
+        parts.append(f"P/S {v.price_to_sales:.1f} vs its own {v.ps_band.n}yr range "
+                      f"{v.ps_band.low:.1f}-{v.ps_band.high:.1f} ({v.ps_band.label})")
+    if not parts:
+        return ""
+    return f"Valuation vs its own history: {'; '.join(parts)}. Overall: {v.verdict}."
+
+
+def _fundamentals_line(r: IndicatorResult) -> str:
+    """Growth/margin/analyst-consensus facts from the daily-cached .info fetch
+    — concrete numbers the AI can cite instead of re-searching for them.
+    Empty when nothing is available (ETFs)."""
+    f = r.fundamentals
+    if not f:
+        return ""
+    parts = []
+    if f.get("revenue_growth") is not None:
+        parts.append(f"revenue {f['revenue_growth']:+.0%} y/y")
+    if f.get("earnings_growth") is not None:
+        parts.append(f"earnings {f['earnings_growth']:+.0%} y/y")
+    if f.get("profit_margin") is not None:
+        parts.append(f"profit margin {f['profit_margin']:.0%}")
+    if f.get("target_mean") and r.price > 0:
+        upside = (f["target_mean"] - r.price) / r.price
+        target = f"analyst mean target ${f['target_mean']:.0f} ({upside:+.0%} vs price)"
+        if f.get("analyst_count"):
+            target += f" from {f['analyst_count']} analysts"
+        if f.get("recommendation"):
+            target += f", consensus {f['recommendation'].replace('_', ' ')}"
+        parts.append(target)
+    if not parts:
+        return ""
+    return "Fundamentals: " + "; ".join(parts) + "."
+
+
 def build_prompt(r: IndicatorResult, detailed: bool = False) -> str:
     from app.telegram import _call, signal_line
     indicators = "; ".join(f"{label}: {sig.display}" for _, label, sig in r.signals)
-    header = (
+    lines = [
         f"{r.ticker} at ${r.price:.2f}. "
         f"Technical setup: {_call(r.score)} (trigger score {r.score:+d}/{r.max_score}). "
-        f"Trend: {r.trend_label or 'unknown'}.\n"
-        f"Indicators: {indicators}\n"
-        f"{signal_line(r)}\n\n"
-    )
+        f"Trend: {r.trend_label or 'unknown'}.",
+        f"Indicators: {indicators}",
+        signal_line(r),
+    ]
+    valuation_line = _valuation_line(r.valuation)
+    if valuation_line:
+        lines.append(valuation_line)
+    fundamentals_line = _fundamentals_line(r)
+    if fundamentals_line:
+        lines.append(fundamentals_line)
+    header = "\n".join(lines) + "\n\n"
     if detailed:
         ask = (
             'Reply in exactly this format: "BUY — reason" or "SELL — reason" or "HOLD — reason", '
-            "where reason is 2-3 sentences: (1) the verdict's fundamental justification with one "
-            "specific fact, (2) the most important upcoming catalyst or recent development for "
-            "this stock. No hedging, no data disclaimers, plain text only, no markdown, "
-            "no citation numbers."
+            "where reason is 3-4 sentences that MUST cite at least two specific numbers — from the "
+            "data above (valuation range, growth rate, analyst target) or from a current fact you "
+            "find (latest quarter's revenue/EPS, guidance, market share). Then name the most "
+            "important upcoming catalyst or recent development — do NOT name the next earnings "
+            "date as the catalyst unless it is within 2 weeks, and if it is, say what specifically "
+            "in that report will move the stock (segment growth, guidance, margin trend); "
+            "otherwise name a real non-earnings catalyst or recent development (product, "
+            "regulatory, competitive, macro). No hedging, no data disclaimers, plain text only, "
+            "no markdown, no citation numbers."
         )
     else:
         ask = (
@@ -164,29 +227,48 @@ _OPTIONS_ASK = (
 )
 
 
+_LEAPS_ASK = (
+    "From the candidates above, intelligently identify and justify up to 3 of the best strikes "
+    "to trade (name the exact strike and expiration for each) — do NOT simply pick whichever has "
+    "the lowest IV/HV. Weigh, together: IV/HV cheapness or richness, the technical/fundamental "
+    "backdrop, whether the extra premium for a farther-dated expiration is actually worth the "
+    "extra time bought (or if a nearer one is the better value), earnings timing, and realistic "
+    "risk (how far the strike is from spot, and how big a move would actually be needed to pay "
+    "off — a strike well above spot needs a much larger, less likely move). Write a genuine, "
+    "well-reasoned analysis — several sentences per strike you recommend, not a one-line pick. "
+    "If nothing here looks attractive, say so plainly and explain why, rather than forcing a "
+    "recommendation. Finish with exactly one closing line in this format: \"TRADE — one-sentence "
+    "summary\" or \"HOLD — one-sentence summary\" or \"NO TRADE — one-sentence summary\", where "
+    "TRADE means at least one of your picks is worth entering now, HOLD means wait for a better "
+    "setup, and NO TRADE means avoid LEAPS on this name right now. Plain text only, no markdown, "
+    "no citation numbers."
+)
+
+
 def build_leaps_prompt(scan) -> str:
-    import itertools
     from app.telegram import _call
     from app.fundamentals import format_pe
     from app.options.chain import days_to_months
 
-    lines = [f"{scan.ticker} LEAPS scan: spot ${scan.spot:.2f}."
+    def _fmt(c):
+        iv_hv_str = f"{c.iv_hv:.2f} ({c.iv_hv_label})" if c.iv_hv is not None else "unknown"
+        pct_vs_spot = (c.strike - scan.spot) / scan.spot * 100
+        return (f"${c.strike:g}C {c.expiration} ({days_to_months(c.dte)}mo out, "
+                f"{pct_vs_spot:+.0f}% vs spot) mid ${c.mid:.2f} delta {c.delta:.2f} "
+                f"IV/HV {iv_hv_str} breakeven ${c.breakeven:.2f}")
+
+    lines = [f"{scan.ticker} LEAPS scan: spot ${scan.spot:.2f}. Every near-the-money strike (delta "
+             f"{scan.delta_min:.2f}-{scan.delta_max:.2f}, within a sane distance of spot) at every "
+             f"expiration 1-2yr out was analyzed."
              f"{f' 90-day realized volatility {scan.hv:.0%}.' if scan.hv else ''}"]
-    if not scan.candidates:
+    if not scan.sample:
         lines.append(f"No call strikes met the delta ({scan.delta_min:.2f}-{scan.delta_max:.2f}) "
                       "and liquidity filters across the scanned expirations (1-2yr out).")
     else:
-        lines.append("Candidates are pre-filtered to near-the-money strikes (highest gamma) and "
-                      "ranked nearest-to-spot first within each expiration, for a multi-month hold "
-                      "sold before expiration — not stock-replacement or far-OTM leverage. Multiple "
-                      "expirations from 1-2yr out are shown so you can weigh price/IV against how "
-                      "much time is being bought.")
-        for (expiration, dte), group in itertools.groupby(scan.candidates, key=lambda c: (c.expiration, c.dte)):
-            lines.append(f"Expiration {expiration} ({days_to_months(dte)}mo out):")
-            for c in group:
-                iv_hv_str = f"{c.iv_hv:.2f} ({c.iv_hv_label})" if c.iv_hv is not None else "unknown"
-                lines.append(f"  ${c.strike:g}C mid ${c.mid:.2f} IV {c.iv:.0%} delta {c.delta:.2f} "
-                              f"IV/HV {iv_hv_str} breakeven ${c.breakeven:.2f}")
+        lines.append("Candidates, spread across expirations and strikes (shows how price/IV changes "
+                      "with time and moneyness):")
+        for c in scan.sample:
+            lines.append(f"  {_fmt(c)}")
     if scan.indicator:
         r = scan.indicator
         lines.append(f"Technical/fundamental setup: {_call(r.score)} · {r.trend_label} · "
@@ -196,8 +278,7 @@ def build_leaps_prompt(scan) -> str:
     if scan.next_earnings:
         lines.append(f"Next earnings: {scan.next_earnings}.")
 
-    ask = _OPTIONS_ASK.format(opt="C")
-    return "\n".join(lines) + "\n\n" + ask
+    return "\n".join(lines) + "\n\n" + _LEAPS_ASK
 
 
 def build_wheel_prompt(scan) -> str:
@@ -209,6 +290,8 @@ def build_wheel_prompt(scan) -> str:
     if not scan.candidates:
         lines.append(f"No put strikes met the delta ({scan.delta_min:.2f}-{scan.delta_max:.2f}) "
                       "and liquidity filters at this expiration.")
+    if scan.candidates:
+        lines.append("Base your verdict ONLY on these candidates — do not name a strike that isn't listed here:")
     for c in scan.candidates:
         risk = "  ⚠ earnings falls before this expiration — IV includes event risk" if c.earnings_risk else ""
         lines.append(
@@ -230,6 +313,79 @@ def build_wheel_prompt(scan) -> str:
 
     ask = _OPTIONS_ASK.format(opt="P")
     return "\n".join(lines) + "\n\n" + ask
+
+
+_DEEPDIVE_ASK = (
+    "Write a tight, data-dense research report on this stock covering ALL of the following — use "
+    "real web search only for what isn't already given above (news, competitors, macro); the "
+    "technicals, valuation, and analyst numbers above are already computed, cite them rather than "
+    "re-deriving them:\n"
+    "1. Technical Setup — read the indicators, trend, and confirmation gates above; is this a "
+    "high-conviction setup or a weak one, and at what price does that change.\n"
+    "2. Fundamentals & Valuation — judge the stock using the valuation-vs-history and "
+    "growth/margin/analyst numbers above; cite the specific figures that drive your view.\n"
+    "3. Options & Sentiment — what the IV/HV and put/call positioning above imply about how the "
+    "options market is pricing risk right now.\n"
+    "4. News, Catalysts & Competition — the most important recent development, the next real "
+    "catalyst (not just 'next earnings' unless it's within 2 weeks — then say what in it "
+    "matters), and how this company stacks up against its 2-3 closest competitors right now.\n"
+    "5. Risks & Macro — the single biggest risk to this thesis plus any sector/macro force that "
+    "matters right now, stated plainly.\n\n"
+    "Each section: 1-3 sentences, every claim anchored to a number or named fact — no filler; if "
+    "a section genuinely has nothing material, one short sentence saying so. It's fine to "
+    "conclude the setup is mixed or unattractive. Then add exactly one line starting "
+    "\"Trade Plan:\" giving an attractive entry zone as a specific price or range, derived from "
+    "the actual levels above (Bollinger bands, EMAs, valuation range) — no target or stop, just "
+    "where this becomes worth buying (or, if the verdict is SELL, where it becomes worth "
+    "exiting). Finish with exactly one closing line in this format: \"BUY — one-sentence "
+    "summary\" or \"SELL — one-sentence summary\" or \"HOLD — one-sentence summary\", reflecting "
+    "a multi-week swing decision, not a day trade. Plain text only, section names as short "
+    "labels (e.g. \"Technical Setup:\"), no markdown formatting, no citation numbers."
+)
+
+
+def build_deepdive_prompt(r: IndicatorResult, snapshot) -> str:
+    from app.telegram import _call, signal_line
+    from app.fundamentals import format_pe
+
+    indicators = "; ".join(f"{label}: {sig.display}" for _, label, sig in r.signals)
+    day_change = (r.price - r.prev_close) / r.prev_close if r.prev_close else 0
+    lines = [
+        f"{r.ticker} at ${r.price:.2f} ({day_change:+.1%} vs prev close ${r.prev_close:.2f}). "
+        f"Technical setup: {_call(r.score)} (trigger score "
+        f"{r.score:+d}/{r.max_score}). Trend: {r.trend_label or 'unknown'}.",
+        f"Indicators: {indicators}",
+        signal_line(r),
+        f"P/E: {format_pe(r.trailing_pe, r.forward_pe)}",
+    ]
+    gates = [(n, p, reason) for n, p, reason in r.rule_results if reason]
+    if gates:
+        gate_strs = [f"{name} {'passed' if passed else 'FAILED'} ({reason})" for name, passed, reason in gates]
+        lines.append(f"Confirmation gates: {'; '.join(gate_strs)}.")
+    valuation_line = _valuation_line(r.valuation)
+    if valuation_line:
+        lines.append(valuation_line)
+    fundamentals_line = _fundamentals_line(r)
+    if fundamentals_line:
+        lines.append(fundamentals_line)
+
+    if snapshot and not snapshot.error:
+        if snapshot.atm_iv is not None and snapshot.hv is not None:
+            iv_hv_str = f"{snapshot.iv_hv:.2f} ({snapshot.iv_hv_label})" if snapshot.iv_hv is not None else "unknown"
+            lines.append(
+                f"Options snapshot ({snapshot.expiration}, {snapshot.dte}d out): ATM IV "
+                f"{snapshot.atm_iv:.0%} vs {snapshot.hv:.0%} 90-day realized volatility -> "
+                f"IV/HV {iv_hv_str}."
+            )
+        else:
+            lines.append(f"Options snapshot ({snapshot.expiration}, {snapshot.dte}d out): "
+                          "insufficient data for an IV/HV read.")
+        if snapshot.put_call.get("volume_ratio") is not None:
+            lines.append(f"Put/call volume ratio (near-term): {snapshot.put_call['volume_ratio']:.2f}.")
+        if snapshot.next_earnings:
+            lines.append(f"Next earnings: {snapshot.next_earnings}.")
+
+    return "\n".join(lines) + "\n\n" + _DEEPDIVE_ASK
 
 
 async def get_summary(r: IndicatorResult, detailed: bool = False) -> str:

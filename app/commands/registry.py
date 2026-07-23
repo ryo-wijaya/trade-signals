@@ -17,7 +17,15 @@ async def dispatch(cmd: str, args: list[str], chat_id: str) -> None:
     entry = _registry.get(cmd)
     if entry:
         log.info("command=/%s args=%s chat=%s", cmd, args or "[]", chat_id)
-        await entry[0](args, chat_id)
+        from app.telegram import send
+        try:
+            await entry[0](args, chat_id)
+        except Exception as exc:
+            # A handler raising unexpectedly previously failed silently from the
+            # user's side (fire-and-forget via asyncio.create_task in bot.py) —
+            # this surfaces it instead of leaving the user staring at nothing.
+            log.error("command /%s failed: %s", cmd, exc)
+            await send(f"/{cmd} failed unexpectedly. Check logs.", chat_id=chat_id)
     else:
         log.warning("unknown command=/%s chat=%s", cmd, chat_id)
         from app.telegram import send

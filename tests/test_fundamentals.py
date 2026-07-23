@@ -106,6 +106,7 @@ class TestGetFundamentals:
                     "revenueGrowth": 0.852, "earningsGrowth": 2.145, "profitMargins": 0.63,
                     "targetMeanPrice": 302.8, "targetLowPrice": 180.0, "targetHighPrice": 500.0,
                     "numberOfAnalystOpinions": 58, "recommendationKey": "strong_buy",
+                    "currency": "USD", "financialCurrency": "USD",
                 }
 
         monkeypatch.setattr(fundamentals.yf, "Ticker", FakeTicker)
@@ -116,7 +117,22 @@ class TestGetFundamentals:
             "revenue_growth": 0.852, "earnings_growth": 2.145, "profit_margin": 0.63,
             "target_mean": 302.8, "target_low": 180.0, "target_high": 500.0,
             "analyst_count": 58, "recommendation": "strong_buy",
+            "currency": "USD", "financial_currency": "USD",
         }
+
+    def test_currency_mismatch_reflected_for_adrs(self, monkeypatch):
+        class FakeTicker:
+            def __init__(self, ticker):
+                pass
+
+            @property
+            def info(self):
+                return {"currency": "USD", "financialCurrency": "CNY"}
+
+        monkeypatch.setattr(fundamentals.yf, "Ticker", FakeTicker)
+        fund = get_fundamentals("BABA")
+        assert fund["currency"] == "USD"
+        assert fund["financial_currency"] == "CNY"
 
     def test_falls_back_to_pegRatio_when_trailingPegRatio_missing(self, monkeypatch):
         class FakeTicker:

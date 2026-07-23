@@ -1,4 +1,5 @@
 import logging
+import math
 import statistics
 from dataclasses import dataclass
 from datetime import date
@@ -21,6 +22,25 @@ _PEG_EXPENSIVE = 2.0
 _BAND_CHEAP_POSITION = 1 / 3
 _BAND_EXPENSIVE_POSITION = 2 / 3
 
+# Composite 0-100 score weights — see _composite_score for the full rationale.
+# P/E-vs-history is the most time-tested, realized (not estimated) signal, so
+# it carries the most weight. P/S-vs-history is weighted equal to PEG because
+# it's the only signal that survives for currently-unprofitable names — a
+# lower weight there would quietly make the score worse exactly where it
+# matters most. Forward P/E gets the least weight since it leans on analyst
+# estimates rather than realized fundamentals. Renormalized over whichever
+# signals are actually available for a given ticker (see _composite_score).
+_SCORE_WEIGHTS = {"pe": 0.35, "forward_pe": 0.15, "peg": 0.25, "ps": 0.25}
+
+# PEG -> 0-100 logistic curve: centered on the Lynch "fair" line (PEG 1.0 -> 50),
+# calibrated so PEG 2.0 (the "expensive" line) -> ~90 and PEG 0.5 -> ~25.
+_PEG_SCORE_MIDPOINT = 1.0
+_PEG_SCORE_STEEPNESS = 2.2
+
+_SCORE_BANDS = (  # (upper bound exclusive, label) — walked in order
+    (20, "very cheap"), (40, "cheap"), (60, "fair"), (80, "expensive"), (101, "very expensive"),
+)
+
 _cache: dict[tuple[str, date], "ValuationResult"] = {}
 
 
@@ -31,6 +51,11 @@ class HistoricalBand:
     median: float
     n: int  # number of historical fiscal-year data points behind this band
     label: str  # "cheap" / "fair" / "expensive" / "unknown"
+    # Defaulted (rather than required) so existing test fixtures that only
+    # care about low/high/median/n/label don't all need updating; every real
+    # band from _historical_band() below always sets these explicitly.
+    mean: float = 0.0
+    stdev: float = 0.0
 
 
 @dataclass
@@ -49,6 +74,18 @@ class ValuationResult:
     price_to_sales: float | None = None
     ps_band: HistoricalBand | None = None
     verdict: str = "insufficient data"  # "cheap" / "fair" / "expensive" / "insufficient data"
+    # Composite 0-100 "expensiveness" score (100 = most expensive) and its
+    # plain-English band — see _composite_score for the full methodology.
+    # None/"insufficient data" when not a single signal was computable.
+    score: float | None = None
+    score_label: str = "insufficient data"
+    # Each component's own 0-100 percentile, stored so consumers (e.g. /cheap's
+    # "key driver" explanation) can identify the most influential signal
+    # without recomputing the z-score/logistic transforms themselves.
+    pe_score: float | None = None
+    forward_pe_score: float | None = None
+    peg_score: float | None = None
+    ps_score: float | None = None
     error: str | None = None
 
 
@@ -87,9 +124,61 @@ def _historical_band(
         return None
     low, high = min(points), max(points)
     return HistoricalBand(
-        low=low, high=high, median=statistics.median(points), n=len(points),
-        label=_classify_position(current, low, high, cheap_pos, expensive_pos),
+        low=low, high=high, median=statistics.median(points),
+        mean=statistics.mean(points), stdev=statistics.stdev(points),
+        n=len(points), label=_classify_position(current, low, high, cheap_pos, expensive_pos),
     )
+
+
+def _zscore_percentile(current: float, mean: float, stdev: float) -> float:
+    """How many standard deviations `current` sits from its own historical
+    mean, mapped through the normal CDF to a smooth 0-100 percentile. Chosen
+    over a min-max [low, high] scale because a single outlier fiscal year
+    (e.g. PFE's 2022 COVID-vaccine earnings spike) would otherwise compress
+    the rest of the scale into a sliver; a z-score instead treats that outlier
+    as widening the historical range, and degrades gracefully — rather than
+    hard-clipping — for a current value outside the observed min/max."""
+    if stdev <= 0:
+        # A perfectly constant historical multiple: any deviation now is
+        # maximally notable in whichever direction it moved.
+        if current == mean:
+            return 50.0
+        return 100.0 if current > mean else 0.0
+    z = (current - mean) / stdev
+    return 100.0 * 0.5 * (1 + math.erf(z / math.sqrt(2)))
+
+
+def _peg_score(peg: float | None, midpoint: float = _PEG_SCORE_MIDPOINT,
+               steepness: float = _PEG_SCORE_STEEPNESS) -> float | None:
+    """PEG needs no historical band (growth already normalizes it) — a
+    logistic curve centered on the standard 1.0 'fair' line gives a smooth
+    0-100 read with no hard cliff at the 1.0/2.0 thresholds. None (not
+    scoreable) for a non-positive PEG, which reflects declining earnings
+    rather than 'cheap growth' and isn't comparable on this scale."""
+    if peg is None or peg <= 0:
+        return None
+    return 100.0 / (1.0 + math.exp(-steepness * (peg - midpoint)))
+
+
+def _composite_score(components: list[tuple[float, float]]) -> float | None:
+    """Weighted average of whichever (score, weight) pairs are available.
+    Missing signals are simply absent from this list — their weight is
+    redistributed proportionally among what's left, rather than defaulting
+    to a neutral 50 that would bias the composite toward 'average' for
+    exactly the names with the least data (e.g. unprofitable companies)."""
+    total_weight = sum(w for _, w in components)
+    if total_weight <= 0:
+        return None
+    return sum(s * w for s, w in components) / total_weight
+
+
+def _score_label(score: float | None) -> str:
+    if score is None:
+        return "insufficient data"
+    for upper, label in _SCORE_BANDS:
+        if score < upper:
+            return label
+    return _SCORE_BANDS[-1][1]
 
 
 def _price_on_or_before(closes, target_date) -> float | None:
@@ -125,6 +214,12 @@ def get_valuation(ticker: str) -> ValuationResult:
     3. Current price/sales vs its own historical price/sales band — covers
        currently-unprofitable names (RXRX-style) where P/E doesn't exist at
        all but revenue-based cheapness still can be read.
+    Also combined into a single 0-100 `score` (100 = most expensive, see
+    _composite_score) via a weighted average of z-score/CDF percentiles (P/E,
+    forward P/E, P/S each vs their own historical band) and a logistic curve
+    (PEG) — missing signals are excluded and the rest reweighted, never
+    defaulted to a neutral midpoint. `verdict`/`score` are both context; never
+    fed into the mean-reversion trigger score.
     Cached once per ticker per day (mirrors app.fundamentals) since this pulls
     a 6-year price history plus annual financials — meaningfully heavier than
     a plain .info call, and fundamentals don't need sub-daily freshness.
@@ -143,6 +238,10 @@ def get_valuation(ticker: str) -> ValuationResult:
     band_cheap_pos = cfg.get("band_cheap_position", _BAND_CHEAP_POSITION)
     band_expensive_pos = cfg.get("band_expensive_position", _BAND_EXPENSIVE_POSITION)
 
+    weights = cfg.get("score_weights", _SCORE_WEIGHTS)
+    peg_mid = cfg.get("peg_score_midpoint", _PEG_SCORE_MIDPOINT)
+    peg_steep = cfg.get("peg_score_steepness", _PEG_SCORE_STEEPNESS)
+
     fund = get_fundamentals(ticker)
     result = ValuationResult(
         ticker=ticker,
@@ -150,6 +249,26 @@ def get_valuation(ticker: str) -> ValuationResult:
         peg=fund["peg"], peg_label=_peg_label(fund["peg"], peg_cheap, peg_expensive),
         price_to_sales=fund["price_to_sales"],
     )
+    peg_score = _peg_score(result.peg, peg_mid, peg_steep)
+
+    currency, financial_currency = fund["currency"], fund["financial_currency"]
+    if currency and financial_currency and currency != financial_currency:
+        # income_stmt's EPS/revenue are reported in the FILING currency (e.g.
+        # BABA files in CNY, NVO in DKK) while the traded price (and .info's
+        # own trailingPE/priceToSales) is in the ADR's USD currency — confirmed
+        # live: dividing a USD price by a CNY EPS produced a "historical P/E"
+        # of ~2.6 for BABA against an actual trailingPE of 18.2. Rather than
+        # attempt FX conversion, the historical band is simply skipped for
+        # these tickers; current P/E, P/S, and PEG (already currency-correct
+        # from .info) are unaffected and still scored.
+        result.error = f"financials reported in {financial_currency}, price in {currency} — historical band skipped"
+        if peg_score is not None:
+            result.peg_score = peg_score
+            result.score = _composite_score([(peg_score, weights.get("peg", _SCORE_WEIGHTS["peg"]))])
+            result.score_label = _score_label(result.score)
+            result.verdict = _overall_verdict([result.peg_label])
+        _cache[key] = result
+        return result
 
     try:
         t = yf.Ticker(ticker)
@@ -167,6 +286,14 @@ def get_valuation(ticker: str) -> ValuationResult:
         # carry a plain RangeIndex rather than a DatetimeIndex, and .tz would
         # raise AttributeError on that instead of falling through gracefully.
         result.error = "insufficient historical data"
+        # PEG alone doesn't need price/financial history, so it can still be
+        # scored/verdicted here (e.g. a ticker whose income_stmt fetch is thin
+        # but whose .info still carries a usable PEG).
+        if peg_score is not None:
+            result.peg_score = peg_score
+            result.score = _composite_score([(peg_score, weights.get("peg", _SCORE_WEIGHTS["peg"]))])
+            result.score_label = _score_label(result.score)
+            result.verdict = _overall_verdict([result.peg_label])
         _cache[key] = result
         return result
 
@@ -208,6 +335,23 @@ def get_valuation(ticker: str) -> ValuationResult:
         result.peg_label,
         result.ps_band.label if result.ps_band else None,
     ])
+
+    components = []
+    if result.pe_band and result.trailing_pe is not None:
+        result.pe_score = _zscore_percentile(result.trailing_pe, result.pe_band.mean, result.pe_band.stdev)
+        components.append((result.pe_score, weights.get("pe", _SCORE_WEIGHTS["pe"])))
+    if result.pe_band and result.forward_pe is not None and result.forward_pe > 0:
+        result.forward_pe_score = _zscore_percentile(result.forward_pe, result.pe_band.mean, result.pe_band.stdev)
+        components.append((result.forward_pe_score, weights.get("forward_pe", _SCORE_WEIGHTS["forward_pe"])))
+    if peg_score is not None:
+        result.peg_score = peg_score
+        components.append((peg_score, weights.get("peg", _SCORE_WEIGHTS["peg"])))
+    if result.ps_band and result.price_to_sales is not None:
+        result.ps_score = _zscore_percentile(result.price_to_sales, result.ps_band.mean, result.ps_band.stdev)
+        components.append((result.ps_score, weights.get("ps", _SCORE_WEIGHTS["ps"])))
+
+    result.score = _composite_score(components)
+    result.score_label = _score_label(result.score)
 
     _cache[key] = result
     return result

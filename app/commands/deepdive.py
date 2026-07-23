@@ -8,6 +8,7 @@ from app.commands.registry import command
 from app.config import load_favourites, load_config
 from app.indicators import analyze_tickers
 from app.llm import openrouter_chat, build_deepdive_prompt
+from app.market_calendar import market_hours_caveat
 from app.options import scan_snapshot
 from app.telegram import send, build_stock_messages, build_priority_alert, now_sgt
 
@@ -51,12 +52,15 @@ async def handle_deepdive(args: list[str], chat_id: str) -> None:
     max_tokens = load_config().get("llm", {}).get("deepdive_max_tokens", 1500)
 
     summaries: dict[str, str] = {}
+    snapshot_missing: set[str] = set()
     for r in results:
         try:
             snapshot = await loop.run_in_executor(None, scan_snapshot, r.ticker)
         except Exception as exc:
             log.warning("options snapshot failed for %s: %s", r.ticker, exc)
             snapshot = None
+        if snapshot is None or snapshot.error or snapshot.atm_iv is None:
+            snapshot_missing.add(r.ticker)
         try:
             summary = await openrouter_chat(build_deepdive_prompt(r, snapshot), max_tokens, timeout=60)
             if summary:
@@ -74,5 +78,9 @@ async def handle_deepdive(args: list[str], chat_id: str) -> None:
             msg += "\n\n" + _highlight_closing_verdict(html.escape(summary))
         else:
             msg += "\n\n<i>Deep dive summary unavailable — check logs.</i>"
+        if r.ticker in snapshot_missing:
+            caveat = market_hours_caveat()
+            if caveat:
+                msg += f"\n\n<i>{html.escape(caveat)}</i>"
         await send(msg, chat_id=chat_id)
         await asyncio.sleep(0.3)

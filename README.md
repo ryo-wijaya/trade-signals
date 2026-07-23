@@ -11,7 +11,7 @@
 
 Four background jobs run automatically:
 
-- **Morning report** — every trading day, 30 minutes after the open (10:00am ET fixed): detailed signals, a fuller AI fundamental summary, a Relative Strength ranking, a Cheap Right Now list (only when at least one favourite reads cheap vs its own history), and a news digest, for your **favourites only**. This is the one automatic report and is not manually triggerable — it always runs, on its own schedule, with no `/interval`-style knob. For an on-demand version any time, use `/signalsplus` (any scope), `/cheap fav`, or `/news`.
+- **Morning report** — every trading day, 30 minutes after the open (10:00am ET fixed): detailed signals, a fuller AI fundamental summary, a Relative Strength ranking, a Cheap Right Now list (only when at least one favourite reads "very cheap" or "cheap" on the valuation score), and a news digest, for your **favourites only**. This is the one automatic report and is not manually triggerable — it always runs, on its own schedule, with no `/interval`-style knob. For an on-demand version any time, use `/signalsplus` (any scope), `/cheap fav` for the same filtered view or plain `/cheap` for the full ranking, or `/news`.
 - **Priority alert** — runs every 30 minutes during market hours. Fires when at least 2 of the 3 mean-reversion indicators agree the stock is oversold or overbought AND the side's confirmation passes: bounce structure for buys, above-average volume for sells (gates are asymmetric — backtesting showed each gate only helps its own side). Max one alert per stock per direction per day. Mon–Fri only.
 - **Cheap LEAPS alert** — runs once daily at 10:30am ET (`scheduler.leaps_alert_hour`/`leaps_alert_minute`), Mon–Fri. Scans favourites' LEAPS chains the same way `/options leaps` does, but only sends a message for tickers where something actually cleared the "cheap" bar (IV/HV below `options.leaps_alert.iv_hv_threshold`, default 0.9) — turning the scanner from something you have to remember to check into something that finds you. Max one alert per ticker per day.
 - **Earnings calendar** — sends next earnings dates for all watchlist tickers every Saturday midnight SGT.
@@ -154,8 +154,8 @@ fly ssh console   # shell into the running container
 | `/signalsplus CRM NVDA` | Signals + LLM summary for specific tickers |
 | `/explain` | How to read each indicator |
 | `/portfolioanalysis` | AI analysis of portfolio actions, what to add, and key risks, plus a computed "cheap right now" list and position-sizing suggestion for oversold tickers |
-| `/cheap` | Which watchlist stocks read cheap vs their own history — raw numbers plus a deterministic data-backed explanation per stock |
-| `/cheap fav` | Same, favourites only (this is also what the morning report auto-appends) |
+| `/cheap` | Every watchlist stock ranked cheapest to most expensive by a 0-100 valuation score, with the data-backed reason per stock |
+| `/cheap fav` | Same, favourites only |
 | `/cheap NVDA CRM` | Same, for specific tickers |
 | `/news` | Most important recent news for your favourites and their sectors — routine/noise items filtered out |
 | `/deepdive` | /signalsplus with a long, structured 7-section AI research report (technicals, fundamentals, options, news, competitors, macro, risks) instead of a short summary, for favourites |
@@ -250,7 +250,10 @@ All settings live in `config.json`. Watchlist and priority-interval changes take
     "peg_cheap_threshold": 1.0,
     "peg_expensive_threshold": 2.0,
     "band_cheap_position": 0.3333,
-    "band_expensive_position": 0.6667
+    "band_expensive_position": 0.6667,
+    "score_weights": { "pe": 0.35, "forward_pe": 0.15, "peg": 0.25, "ps": 0.25 },
+    "peg_score_midpoint": 1.0,
+    "peg_score_steepness": 2.2
   },
 
   "data": {
@@ -365,7 +368,19 @@ Sell alerts require the current bar's volume at or above its 20-day average (`ru
 - **The bid-ask spread filter is a percentage-OR-absolute test**, not percentage alone — a nickel-wide spread on a $0.20 premium is "50%" but perfectly tradeable; a dollar-wide spread on a $10 premium is only "10%" but genuinely illiquid. A contract passes if either the percentage spread is tight (`max_spread_pct`) or the absolute spread is small (`min_absolute_spread`, $0.10 default, hardcoded).
 - **Smaller-cap tickers often have only one expiration inside the LEAPS window** (confirmed: NVDA has 4 expirations in the 1–2yr range, PFE has 2, MRSH and RXRX have exactly 1). The scanner shows every expiration it finds (up to `max_expirations`) rather than failing, and always discloses the actual expiration/DTE used for each group.
 - **Delta is computed via Black-Scholes** (`chain.py:black_scholes_delta`, no external dependency — just `math.erf`), using each contract's own IV, no dividend yield term. It's a ranking/filtering tool, not a precision Greek.
-- **Zero candidates is a valid, honest result** — it means nothing in the chain met the delta band and liquidity filters, not a bug. Both scanners show it plainly rather than forcing a bad recommendation.
+- **Zero candidates is *usually* a valid, honest result** — nothing in the chain met the delta band and liquidity filters. But see "Options data & market hours" immediately below for the one case where an empty result is actually a data-freshness artifact, not a real absence of candidates.
+
+### Options data & market hours
+
+**Confirmed live**: outside regular US trading hours (9:30am–4pm ET), yfinance's free options bid/ask feed goes stale. A scan of GOOGL — one of the most liquid underlyings there is — run at 5:45am ET came back with **zero** near-the-money LEAPS candidates. The raw chain showed why: every strike from $210 to $725 (the entire sane near-the-money zone, spot was $342) had `bid=$0.00, ask=$0.00` despite several logging real trading volume, while only a sparse handful of "recently touched" strikes — mostly deep in-the-money, one deep out-of-the-money — still carried a live two-sided quote. The `bid > 0` liquidity filter correctly drops the stale zeros; the problem is purely that there's no live quote to show right now, not that GOOGL lacks liquid LEAPS.
+
+`app/market_calendar.py:is_market_hours_now()` checks whether the exchange's regular session is open right now (not just whether today is a trading day — `is_trading_day()` already covered that). `market_hours_caveat()` returns a ready-to-show note when it isn't, empty string when the market is open. Wired into:
+- **`/options leaps`/`wheel`** — appended to the "Rating: NO TRADE" block whenever no candidates cleared the filters and the market is closed.
+- **`/deepdive`** — appended per-ticker whenever that ticker's options snapshot came back with no usable IV data (`scan_snapshot` failed, errored, or had no ATM IV) and the market is closed.
+
+The daily **Cheap LEAPS Alert** isn't wired to this — it's scheduled at 10:30am ET by default (already inside the session), and since it only ever sends a message when it *finds* something, there's no "empty result" message to caveat in the first place. If you retime it via config to run outside market hours, be aware it could silently miss a real candidate on a stale-data morning with no way to tell.
+
+**Takeaway**: if `/options` or `/deepdive` comes back empty or thin and you see the "US markets are closed" note, that's a signal to re-run during 9:30am–4pm ET, not a sign the underlying has no viable candidates.
 
 ### LEAPS scanner
 
@@ -387,30 +402,45 @@ At the **bottom** of the message, the ticker's technical/fundamental rating, tre
 
 `/deepdive [TICKER...]` (no ticker → favourites). Same technical scan as `/signalsplus` — indicators, trend, P/E, priority alerts — but the AI summary is replaced with a structured, data-dense report (`llm.build_deepdive_prompt`, `llm.deepdive_max_tokens`, default 1500). The prompt hands the model **everything the app has already computed** — indicator readings with exact levels, trend regime, confirmation-gate results, day-over-day change, valuation-vs-history with actual ranges, growth/margin/analyst-consensus numbers, and the options snapshot — and instructs it to cite those numbers rather than re-derive them, spending its live search budget only on what the app can't compute (news, competitors, macro). Five sections, 1-3 sentences each, every claim anchored to a number or named fact: Technical Setup, Fundamentals & Valuation, Options & Sentiment, News/Catalysts & Competition (same no-lazy-earnings-catalyst rule as `/signalsplus`), and Risks & Macro. Then a **`Trade Plan:`** line naming a concrete entry zone — a specific price or range derived from the Bollinger/EMA/valuation levels in the prompt (deliberately no target or stop) — and one bolded `BUY`/`SELL`/`HOLD` closing verdict (same last-matching-line extraction as the LEAPS scanner).
 
-The options input is a lightweight **snapshot**, not a full strike scan: `app/options/snapshot.py:scan_snapshot` picks the nearest expiration in `options.snapshot.min_days`–`max_days` (30–45 days by default), reads the ATM call's IV, compares it against 90-day realized volatility, and adds the put/call volume ratio — enough context for the AI to reason about options-market sentiment without repeating the whole LEAPS/wheel scan. News, competitor comparison, and macro/sector context are **not** fetched by the app at all — the prompt tells the live-search model to search for them itself, the same approach `/news` already uses, so there's no new scraping or competitor-mapping code to maintain.
+The options input is a lightweight **snapshot**, not a full strike scan: `app/options/snapshot.py:scan_snapshot` picks the nearest expiration in `options.snapshot.min_days`–`max_days` (30–45 days by default), reads the ATM call's IV, compares it against 90-day realized volatility, and adds the put/call volume ratio — enough context for the AI to reason about options-market sentiment without repeating the whole LEAPS/wheel scan. News, competitor comparison, and macro/sector context are **not** fetched by the app at all — the prompt tells the live-search model to search for them itself, the same approach `/news` already uses, so there's no new scraping or competitor-mapping code to maintain. If a ticker's snapshot comes back with no usable IV data and the market is currently closed, the message says so (see "Options data & market hours" below) rather than leaving you to guess why the options section is thin.
 
 This is the slowest command in the bot by design: one options snapshot fetch plus one long-form LLM call per ticker, so a multi-ticker `/deepdive` will take noticeably longer than `/signalsplus` on the same list — the initial "running deep dive…" message says so up front.
 
 ## Valuation
 
-`app/valuation.py:get_valuation` answers "is this cheap **relative to itself**, not the market" — three independent, context-only reads (never scored, same tier as P/E), shown as a `Valuation` row in every signals/signalsplus/morning-report/priority-alert block, in `/deepdive`'s Fundamentals & Valuation section, and factored directly into `/portfolioanalysis` (including a dedicated "Cheap right now" list — the direct answer to "find cheap stocks from my portfolio").
+`app/valuation.py:get_valuation` answers "is this cheap **relative to itself**, not the market" — context-only reads (never scored, same tier as P/E), shown as a `Valuation` row in every signals/signalsplus/morning-report/priority-alert block, in `/deepdive`'s Fundamentals & Valuation section, and factored directly into `/portfolioanalysis` and `/cheap`.
 
-1. **P/E vs its own history** — current trailing P/E compared against the stock's own trailing P/E at each of its last ~4 fiscal year-ends. Critically, each historical point is priced against **that year's own diluted EPS**, not today's — using today's EPS against old prices would badly mislead for fast-growing names (confirmed live: NVDA's diluted EPS grew from $0.17 to $4.90 in 4 years; using current EPS against 2023's price would have made NVDA look absurdly cheap for the wrong reason). Annual EPS and revenue come from yfinance's free `income_stmt` (typically ~4-5 fiscal years; some tickers fewer). The **forward P/E is judged against the same band** (shown as e.g. `PE cheap, fwd very cheap`) — a forward multiple below the band means estimates imply the stock gets cheaper still if earnings arrive as forecast. The forward read is context only and doesn't vote in the overall verdict, keeping the 3-signal verdict stable.
-2. **PEG ratio** — P/E divided by earnings growth, the standard Peter Lynch heuristic: below `valuation.peg_cheap_threshold` (1.0) is cheap, above `peg_expensive_threshold` (2.0) is expensive. A single absolute read, no historical band needed since growth is already normalized in.
-3. **Price/sales vs its own history** — same historical-band methodology as #1, but with revenue instead of earnings. This is what still gives a real cheap/expensive read for **currently-unprofitable names where P/E is n/m** (confirmed live: RXRX has no trailing P/E at all, but its P/S of 23.8 sits below its entire 4-year historical P/S range of 28.9–117.9 → reads "cheap").
+Four underlying signals feed a single **0-100 composite score** (0 = cheapest, 100 = most expensive):
 
-Each historical band (P/E and P/S) is a simple low/median/high split of whatever fiscal years are available, classified by where the current multiple falls: bottom third `valuation.band_cheap_position` (1/3 default) is cheap, top third `band_expensive_position` (2/3 default) is expensive, middle is fair. The **overall verdict** (cheap/fair/expensive/insufficient data) is whichever reading has the most agreement among the signals that were actually computable — a tie reads "fair", and a ticker with zero computable signals (e.g. an ETF with no income statement, like IBIT) reads "insufficient data" rather than guessing.
+1. **P/E vs its own history** (score weight 35%) — current trailing P/E compared against the stock's own trailing P/E at each of its last ~4 fiscal year-ends. Critically, each historical point is priced against **that year's own diluted EPS**, not today's — using today's EPS against old prices would badly mislead for fast-growing names (confirmed live: NVDA's diluted EPS grew from $0.17 to $4.90 in 4 years). Annual EPS and revenue come from yfinance's free `income_stmt` (typically ~4-5 fiscal years; some tickers fewer).
+2. **Forward P/E vs the same band** (weight 15%) — a forward multiple below the band means estimates imply the stock gets cheaper still if earnings arrive as forecast. Lower weight since it leans on analyst estimates rather than realized numbers.
+3. **PEG ratio** (weight 25%) — P/E divided by earnings growth, the standard Peter Lynch heuristic.
+4. **Price/sales vs its own history** (weight 25%) — same historical-band methodology as #1, but with revenue instead of earnings. This is what still gives a real read for **currently-unprofitable names where P/E is n/m** (confirmed live: RXRX has no trailing P/E at all, but its P/S of 23.8 sits below its entire 4-year historical P/S range of 28.9–117.9 → scores very cheap).
 
-**Known simplifications, disclosed rather than hidden:**
+### How the score is computed
+
+Each signal is normalized onto its own 0-100 scale *before* being combined, so nothing is compared apples-to-oranges:
+
+- **P/E and P/S** (and forward P/E) use a **z-score → normal CDF** transform: how many standard deviations the current multiple sits from the *mean* of its own historical values, mapped to a smooth 0-100 percentile via `0.5 * (1 + erf(z / √2))`. Chosen over a min-max `[low, high]` scale because a single outlier fiscal year (PFE's 2022 COVID-vaccine earnings spike) would otherwise compress the rest of the scale into a sliver; a z-score instead treats that outlier as *widening* the acceptable range, and degrades gracefully for a value outside the historical min/max instead of hard-clipping at 0 or 100.
+- **PEG** uses a **logistic curve** centered on the Lynch "fair" line: PEG 1.0 → 50, PEG 2.0 → ~90, PEG 0.5 → ~25. Smooth and bounded, no cliff at the 1.0/2.0 thresholds. No historical band needed since growth is already normalized in.
+- The four normalized scores are combined by **weighted average** using the weights above (`valuation.score_weights`, `peg_score_midpoint`/`peg_score_steepness`, all configurable).
+- **Bias-avoidance rule**: when a signal is unavailable (no PEG for an unprofitable company, no historical band at all for an ADR — see below), its weight is **redistributed proportionally** among whatever remains, never defaulted to a neutral 50. A name with only P/S available scores 100% on P/S, not diluted toward "average" by phantom missing signals. A ticker with zero computable signals (ETFs like IBIT) gets **no score at all**, shown separately, never a fabricated one.
+- Score bands: 0-20 very cheap, 20-40 cheap, 40-60 fair, 60-80 expensive, 80-100 very expensive.
+- **The weights are a reasoned judgment, not a backtested result** — P/E-vs-history gets the most weight as the most time-tested, realized signal; P/S is weighted equal to PEG specifically because it's the only signal that survives for unprofitable names (down-weighting it would quietly make the score worse exactly where it matters most); forward P/E gets the least weight since it leans on estimates.
+
+### Currency safety (ADRs)
+
+Confirmed live: BABA files its income statement in CNY and NVO in DKK, while both trade in USD — dividing a USD price by a CNY/DKK EPS produced a nonsense "historical P/E" of ~2.6 for BABA against its real (currency-correct, Yahoo-computed) trailing P/E of 18.2. `get_valuation` now checks `.info`'s `currency` vs `financialCurrency` fields and, when they differ, **skips the historical P/E and P/S bands entirely** rather than silently computing a wrong number — PEG (already currency-safe, since Yahoo computes it internally) still scores normally. This is a real, disclosed limitation: no FX conversion is attempted, so ADR-style tickers get a PEG-only score rather than the full 4-signal composite.
+
+**Other known simplifications, disclosed rather than hidden:**
 - Revenue-per-share for the P/S band divides past revenue by **today's** share count (yfinance has no historical share-count feed either) — buybacks/dilution over the years aren't reflected.
-- A single volatile fiscal year can skew a historical band (confirmed live: PFE's 2022 COVID-vaccine-driven EPS spike makes that year's historical P/E an outlier low — a real, disclosed limitation of trailing-PE-based history, not a bug).
 - A ~4-year lookback (yfinance's free-tier limit) is a coarse "recent trading range," not a rich multi-decade chart.
 
 This is meaningfully heavier than a plain P/E fetch — it pulls `valuation.history_period` (6 years default) of price history plus annual financials per ticker — so it's cached once per ticker per day, the same pattern as P/E (`app/fundamentals.py`). The first report of the day for each ticker takes a bit longer; every subsequent report that day is instant.
 
-### Cheap list
+### Valuation ranking (`/cheap`)
 
-`/cheap` (watchlist), `/cheap fav` (favourites), `/cheap TICKER...` — the direct answer to "which of my stocks are cheap right now" (`app/commands/cheap.py`). Lists only tickers whose overall valuation verdict is **cheap**, each with the raw numbers (trailing + forward P/E vs its own range, PEG, P/S vs its own range) and a plain-English explanation **assembled deterministically from that data** — e.g. *"Trailing P/E 19.7 is below its entire 4yr range (27.1–786.3), and the forward P/E of 10.5 is cheaper still."* Signals that don't agree are disclosed as a `Watch:` note (e.g. *"PEG 1.75 reads fair"*) rather than hidden. No AI involved — the same data always produces the same explanation, and it distinguishes "below the entire historical range" from merely "in the bottom third" since those are different strengths of cheapness. The favourites-scoped version is auto-appended to the morning report whenever at least one favourite qualifies.
+`/cheap` (watchlist), `/cheap fav` (favourites), `/cheap TICKER...` (`app/commands/cheap.py`) — ranks **every ticker in scope**, cheapest to most expensive, by the 0-100 score above. Shows a compact table (score, ticker, band) plus one sentence per ticker naming whichever single signal most drove that score — e.g. *"Trailing P/E 19.7 is below its entire 4yr range (27.1–786.3), and the forward P/E of 10.5 is cheaper still"* or *"PEG 3.34 — well above the 2.0 expensive line, a rich price for that growth rate."* Tickers with zero computable signal (ETFs) are listed separately as "insufficient financial history" — **never silently dropped**, so the row count in the table plus that footer should always add up to the number of tickers you asked about. No AI involved anywhere in this command — same data always produces the same ranking. The morning report auto-appends a filtered version (`only_cheap=True`, titled "Cheap Right Now") showing only the very-cheap/cheap bands, to keep daily noise low; run `/cheap` directly any time for the full ranking including fair and expensive names.
 
 ## Relative strength
 

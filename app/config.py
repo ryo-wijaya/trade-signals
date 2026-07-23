@@ -80,6 +80,9 @@ _DEFAULTS = {
         "peg_expensive_threshold": 2.0,
         "band_cheap_position": 0.3333,
         "band_expensive_position": 0.6667,
+        "score_weights": {"pe": 0.35, "forward_pe": 0.15, "peg": 0.25, "ps": 0.25},
+        "peg_score_midpoint": 1.0,
+        "peg_score_steepness": 2.2,
     },
     "data": {
         "history_period": "400d",

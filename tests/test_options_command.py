@@ -1,4 +1,7 @@
-from app.commands.options import _parse_verdict, _highlight_closing_verdict, _render_leaps, _render_wheel
+import asyncio
+
+from app.commands.options import _parse_verdict, _highlight_closing_verdict, _render_leaps, _render_wheel, handle_options
+import app.commands.options as options_mod
 
 
 class TestParseVerdict:
@@ -140,3 +143,41 @@ class TestRenderWheel:
     def test_no_candidates_uses_actual_configured_band(self):
         body = _render_wheel(_wheel_scan(candidates=[], delta_min=0.15, delta_max=0.30))
         assert "delta (0.15-0.30)" in body
+
+
+class TestMarketHoursCaveatIntegration:
+    def _wire(self, monkeypatch, scan, market_open):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setattr(options_mod, "scan_leaps", lambda ticker: scan)
+        monkeypatch.setattr(options_mod, "load_favourites", lambda: ["NVDA"])
+        monkeypatch.setattr(options_mod, "market_hours_caveat",
+                             lambda: "" if market_open else "Note: US markets are closed right now.")
+
+        sent = []
+
+        async def _fake_send(msg, chat_id=None):
+            sent.append(msg)
+        monkeypatch.setattr(options_mod, "send", _fake_send)
+        return sent
+
+    def test_caveat_shown_when_no_candidates_and_market_closed(self, monkeypatch):
+        sent = self._wire(monkeypatch, _leaps_scan(sample=[]), market_open=False)
+        asyncio.run(handle_options(["LEAPS"], "123"))
+        assert any("US markets are closed" in m for m in sent)
+
+    def test_no_caveat_when_no_candidates_but_market_open(self, monkeypatch):
+        sent = self._wire(monkeypatch, _leaps_scan(sample=[]), market_open=True)
+        asyncio.run(handle_options(["LEAPS"], "123"))
+        assert not any("US markets are closed" in m for m in sent)
+
+    def test_no_caveat_when_candidates_found_even_if_market_closed(self, monkeypatch):
+        sent = self._wire(monkeypatch, _leaps_scan(), market_open=False)
+        monkeypatch.setattr(options_mod, "openrouter_chat", _async_return(""))
+        asyncio.run(handle_options(["LEAPS"], "123"))
+        assert not any("US markets are closed" in m for m in sent)
+
+
+def _async_return(value):
+    async def _inner(*a, **kw):
+        return value
+    return _inner

@@ -9,6 +9,7 @@ import app.valuation as valuation_mod
 from app.valuation import (
     get_valuation, format_valuation, HistoricalBand, ValuationResult,
     _historical_band, _classify_position, _peg_label, _overall_verdict,
+    _zscore_percentile, _peg_score, _composite_score, _score_label,
 )
 
 
@@ -61,7 +62,8 @@ def _wire(monkeypatch, stmt, closes, fund, cfg=None):
 
 def _fund(**overrides):
     defaults = {"trailing_pe": None, "forward_pe": None, "peg": None,
-                "price_to_sales": None, "shares_outstanding": None}
+                "price_to_sales": None, "shares_outstanding": None,
+                "currency": None, "financial_currency": None}
     defaults.update(overrides)
     return defaults
 
@@ -98,6 +100,117 @@ class TestHistoricalBand:
         assert band.median == 20.0
         assert band.n == 3
         assert band.label == "cheap"
+
+    def test_computes_mean_and_stdev(self):
+        import statistics
+        points = [10.0, 20.0, 30.0]
+        band = _historical_band(points, current=12.0)
+        assert band.mean == statistics.mean(points)
+        assert band.stdev == statistics.stdev(points)
+
+
+class TestZscorePercentile:
+    def test_at_mean_is_fifty(self):
+        assert _zscore_percentile(50.0, mean=50.0, stdev=10.0) == pytest.approx(50.0)
+
+    def test_one_stdev_below_mean(self):
+        # z=-1 -> normal CDF(-1) ~= 15.87
+        assert _zscore_percentile(40.0, mean=50.0, stdev=10.0) == pytest.approx(15.87, abs=0.1)
+
+    def test_one_stdev_above_mean(self):
+        assert _zscore_percentile(60.0, mean=50.0, stdev=10.0) == pytest.approx(84.13, abs=0.1)
+
+    def test_symmetric_around_mean(self):
+        below = _zscore_percentile(30.0, mean=50.0, stdev=10.0)
+        above = _zscore_percentile(70.0, mean=50.0, stdev=10.0)
+        assert below == pytest.approx(100.0 - above)
+
+    def test_far_below_approaches_zero_not_hard_clip(self):
+        score = _zscore_percentile(0.0, mean=50.0, stdev=10.0)  # z = -5
+        assert 0.0 < score < 0.01  # asymptotic, never exactly 0
+
+    def test_zero_stdev_current_equals_mean_is_fifty(self):
+        assert _zscore_percentile(50.0, mean=50.0, stdev=0.0) == 50.0
+
+    def test_zero_stdev_current_above_mean_is_hundred(self):
+        assert _zscore_percentile(55.0, mean=50.0, stdev=0.0) == 100.0
+
+    def test_zero_stdev_current_below_mean_is_zero(self):
+        assert _zscore_percentile(45.0, mean=50.0, stdev=0.0) == 0.0
+
+    def test_outlier_year_widens_range_rather_than_compressing_scale(self):
+        # PFE-style: one outlier year (66.2) alongside a tight cluster.
+        # A min-max scale would compress 7.6-17.7 into a tiny sliver near 0;
+        # the z-score/CDF approach keeps the tight cluster near the middle.
+        import statistics
+        points = [7.62, 17.0, 17.7, 66.16]
+        mean, stdev = statistics.mean(points), statistics.stdev(points)
+        score_at_17 = _zscore_percentile(17.7, mean, stdev)
+        assert 20 < score_at_17 < 60  # not squashed near either extreme
+
+
+class TestPegScore:
+    def test_at_midpoint_is_fifty(self):
+        assert _peg_score(1.0) == pytest.approx(50.0)
+
+    def test_below_midpoint_is_cheap(self):
+        assert _peg_score(0.5) < 30
+
+    def test_above_expensive_line_is_high(self):
+        assert _peg_score(2.0) > 85
+
+    def test_monotonically_increasing(self):
+        scores = [_peg_score(p) for p in [0.1, 0.5, 1.0, 1.5, 2.0, 3.0]]
+        assert scores == sorted(scores)
+
+    def test_none_for_non_positive_peg(self):
+        assert _peg_score(0) is None
+        assert _peg_score(-0.5) is None
+        assert _peg_score(None) is None
+
+    def test_bounded_between_zero_and_hundred(self):
+        for p in [0.01, 0.1, 1.0, 5.0, 8.0]:
+            score = _peg_score(p)
+            assert 0.0 < score < 100.0
+
+
+class TestCompositeScore:
+    def test_single_component_returns_its_own_score(self):
+        assert _composite_score([(30.0, 0.35)]) == pytest.approx(30.0)
+
+    def test_weighted_average_of_multiple_components(self):
+        # (score, weight) pairs: 0.35*20 + 0.65*80, renormalized by 1.0 total
+        result = _composite_score([(20.0, 0.35), (80.0, 0.65)])
+        assert result == pytest.approx(0.35 * 20 + 0.65 * 80)
+
+    def test_missing_signal_reweights_rather_than_defaults_to_fifty(self):
+        # Only PS available (weight 0.25 out of the full 1.0) -- with proper
+        # reweighting, a PS score of 10 should score as 10, NOT get diluted
+        # toward 50 by phantom missing signals.
+        assert _composite_score([(10.0, 0.25)]) == pytest.approx(10.0)
+
+    def test_empty_components_is_none(self):
+        assert _composite_score([]) is None
+
+    def test_zero_total_weight_is_none(self):
+        assert _composite_score([(50.0, 0.0)]) is None
+
+
+class TestScoreLabel:
+    def test_boundaries(self):
+        assert _score_label(0) == "very cheap"
+        assert _score_label(19.9) == "very cheap"
+        assert _score_label(20) == "cheap"
+        assert _score_label(39.9) == "cheap"
+        assert _score_label(40) == "fair"
+        assert _score_label(59.9) == "fair"
+        assert _score_label(60) == "expensive"
+        assert _score_label(79.9) == "expensive"
+        assert _score_label(80) == "very expensive"
+        assert _score_label(100) == "very expensive"
+
+    def test_none_is_insufficient_data(self):
+        assert _score_label(None) == "insufficient data"
 
 
 class TestPegLabel:
@@ -164,6 +277,148 @@ class TestGetValuation:
         assert v.pe_band.label == "cheap"  # 31.7 sits below the historical low
         assert v.peg_label == "cheap"
         assert v.verdict == "cheap"
+        assert v.score is not None
+        assert v.score < 30  # all four signals agree this reads cheap
+        assert v.score_label in {"very cheap", "cheap"}
+
+    def test_score_uses_all_four_available_signals(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31), (2025, 1, 31), (2026, 1, 31))
+        stmt = _stmt(dates, eps_values=[0.17, 1.19, 2.94, 4.90],
+                     revenue_values=[27e9, 61e9, 130e9, 216e9])
+        closes = _closes(dates, prices=[20.0, 60.0, 120.0, 190.0])
+        fund = _fund(trailing_pe=31.7, forward_pe=16.5, peg=0.57,
+                     price_to_sales=20.3, shares_outstanding=24_000_000_000)
+        _wire(monkeypatch, stmt, closes, fund)
+
+        v = get_valuation("NVDA")
+        # Manually recompute the expected composite to prove all 4 signals feed in.
+        from app.valuation import _zscore_percentile, _peg_score, _composite_score
+        expected = _composite_score([
+            (_zscore_percentile(31.7, v.pe_band.mean, v.pe_band.stdev), 0.35),
+            (_zscore_percentile(16.5, v.pe_band.mean, v.pe_band.stdev), 0.15),
+            (_peg_score(0.57), 0.25),
+            (_zscore_percentile(20.3, v.ps_band.mean, v.ps_band.stdev), 0.25),
+        ])
+        assert v.score == pytest.approx(expected)
+
+    def test_component_scores_stored_on_result(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31), (2025, 1, 31), (2026, 1, 31))
+        stmt = _stmt(dates, eps_values=[0.17, 1.19, 2.94, 4.90],
+                     revenue_values=[27e9, 61e9, 130e9, 216e9])
+        closes = _closes(dates, prices=[20.0, 60.0, 120.0, 190.0])
+        fund = _fund(trailing_pe=31.7, forward_pe=16.5, peg=0.57,
+                     price_to_sales=20.3, shares_outstanding=24_000_000_000)
+        _wire(monkeypatch, stmt, closes, fund)
+
+        v = get_valuation("NVDA")
+        assert v.pe_score is not None
+        assert v.forward_pe_score is not None
+        assert v.peg_score == pytest.approx(_peg_score(0.57))
+        assert v.ps_score is not None
+
+    def test_component_scores_none_when_signal_unavailable(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[-1.0, -2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 70.0])
+        _wire(monkeypatch, stmt, closes, _fund(peg=None, forward_pe=16.5))
+
+        v = get_valuation("TEST")
+        assert v.pe_score is None  # no pe_band (all loss years)
+        assert v.forward_pe_score is None  # forward score needs a pe_band too
+        assert v.peg_score is None
+
+    def test_only_ps_available_scores_on_ps_alone_not_diluted(self, monkeypatch):
+        # Unprofitable every year (RXRX-style): no PE band, no PEG. Score
+        # must come entirely from P/S, not get pulled toward 50 by phantom
+        # missing signals.
+        dates = _dates((2023, 1, 31), (2024, 1, 31), (2025, 1, 31), (2026, 1, 31))
+        stmt = _stmt(dates, eps_values=[-1.4, -1.6, -1.7, -1.4],
+                     revenue_values=[39e6, 44e6, 58e6, 74e6])
+        closes = _closes(dates, prices=[10.0, 8.0, 6.0, 3.0])
+        fund = _fund(trailing_pe=None, forward_pe=-3.2, peg=None,
+                     price_to_sales=23.8, shares_outstanding=524_000_000)
+        _wire(monkeypatch, stmt, closes, fund)
+
+        v = get_valuation("RXRX")
+        assert v.pe_band is None
+        assert v.peg_label == "unknown"
+        assert v.ps_band is not None
+
+        from app.valuation import _zscore_percentile
+        expected = _zscore_percentile(23.8, v.ps_band.mean, v.ps_band.stdev)
+        assert v.score == pytest.approx(expected)
+
+    def test_no_signals_available_gives_no_score(self, monkeypatch):
+        _wire(monkeypatch, _stmt([], [], []), _closes([], []), _fund())
+        v = get_valuation("IBIT")
+        assert v.score is None
+        assert v.score_label == "insufficient data"
+
+    def test_peg_only_scoreable_when_history_fetch_errors(self, monkeypatch):
+        class FlakyTicker:
+            def __init__(self, ticker):
+                pass
+
+            @property
+            def income_stmt(self):
+                raise RuntimeError("network down")
+
+        monkeypatch.setattr(valuation_mod, "yf", SimpleNamespace(Ticker=FlakyTicker))
+        monkeypatch.setattr("app.fundamentals.get_fundamentals", lambda ticker: _fund(peg=0.5))
+        monkeypatch.setattr("app.config.load_config", lambda: _valuation_cfg())
+
+        v = get_valuation("TEST")
+        assert v.error == "history fetch failed"
+        assert v.score is None  # this branch doesn't cache/score -- consistent with "retry next call"
+
+    def test_peg_only_scoreable_when_no_income_statement(self, monkeypatch):
+        _wire(monkeypatch, _stmt([], [], []), _closes([], []), _fund(peg=0.5))
+        v = get_valuation("TEST")
+        assert v.error == "insufficient historical data"
+        assert v.score is not None
+        from app.valuation import _peg_score
+        assert v.score == pytest.approx(_peg_score(0.5))
+        assert v.verdict == "cheap"
+
+    def test_currency_mismatch_skips_historical_band_but_still_scores_peg(self, monkeypatch):
+        # BABA-style: financials filed in CNY, ADR trades in USD -- dividing
+        # a USD price by a CNY EPS would produce a meaningless "historical PE".
+        dates = _dates((2023, 1, 31), (2024, 1, 31), (2025, 1, 31), (2026, 1, 31))
+        stmt = _stmt(dates, eps_values=[27.44, 31.28, 53.60, 44.00],
+                     revenue_values=[868e9, 941e9, 996e9, 1000e9])
+        closes = _closes(dates, prices=[220.0, 180.0, 90.0, 116.0])
+        fund = _fund(trailing_pe=18.2, forward_pe=12.8, peg=0.49, price_to_sales=1.9,
+                     shares_outstanding=2_500_000_000, currency="USD", financial_currency="CNY")
+        _wire(monkeypatch, stmt, closes, fund)
+
+        v = get_valuation("BABA")
+        assert v.pe_band is None
+        assert v.ps_band is None
+        assert "CNY" in v.error and "USD" in v.error
+        assert v.score is not None  # PEG alone still scores
+        from app.valuation import _peg_score
+        assert v.score == pytest.approx(_peg_score(0.49))
+        assert v.verdict == "cheap"
+
+    def test_same_currency_computes_bands_normally(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[1.0, 2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 70.0])
+        _wire(monkeypatch, stmt, closes, _fund(currency="USD", financial_currency="USD"))
+
+        v = get_valuation("TEST")
+        assert v.pe_band is not None
+
+    def test_unknown_currency_fields_do_not_block_bands(self, monkeypatch):
+        # currency/financial_currency both None (e.g. .info didn't provide
+        # them) -- must not be misread as a mismatch.
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[1.0, 2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 70.0])
+        _wire(monkeypatch, stmt, closes, _fund(currency=None, financial_currency=None))
+
+        v = get_valuation("TEST")
+        assert v.pe_band is not None
 
     def test_loss_year_excluded_from_pe_band(self, monkeypatch):
         dates = _dates((2023, 1, 31), (2024, 1, 31), (2025, 1, 31))
@@ -286,6 +541,23 @@ class TestGetValuation:
 
         v = get_valuation("TEST")
         assert v.peg_label == "cheap"
+
+    def test_config_score_weights_are_applied(self, monkeypatch):
+        # Only PEG available; a custom weight for it shouldn't matter for the
+        # single-component case (renormalized to 1.0 regardless), but prove
+        # the config value is actually read and passed through.
+        _wire(monkeypatch, _stmt([], [], []), _closes([], []), _fund(peg=0.5),
+              cfg=_valuation_cfg(score_weights={"pe": 0.1, "forward_pe": 0.1, "peg": 0.9, "ps": 0.1}))
+        from app.valuation import _peg_score
+        v = get_valuation("TEST")
+        assert v.score == pytest.approx(_peg_score(0.5))  # single component always normalizes to itself
+
+    def test_config_peg_score_curve_is_applied(self, monkeypatch):
+        _wire(monkeypatch, _stmt([], [], []), _closes([], []), _fund(peg=1.6),
+              cfg=_valuation_cfg(peg_score_midpoint=1.6, peg_score_steepness=2.2))
+        v = get_valuation("TEST")
+        # PEG exactly at the configured midpoint -> score exactly 50
+        assert v.score == pytest.approx(50.0)
 
     def test_config_band_positions_are_applied(self, monkeypatch):
         dates = _dates((2023, 1, 31), (2024, 1, 31), (2025, 1, 31))

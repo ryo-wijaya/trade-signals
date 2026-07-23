@@ -107,8 +107,8 @@ def run_morning_report() -> None:
             await send(rs_msg)
             await asyncio.sleep(0.3)
 
-        from app.commands.cheap import build_cheap_report
-        cheap_msg = build_cheap_report(results, "favourites")
+        from app.commands.cheap import build_valuation_ranking
+        cheap_msg = build_valuation_ranking(results, "favourites", only_cheap=True)
         if cheap_msg:
             await send(cheap_msg)
             await asyncio.sleep(0.3)

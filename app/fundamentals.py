@@ -11,6 +11,7 @@ _EMPTY_FUNDAMENTALS = {
     "revenue_growth": None, "earnings_growth": None, "profit_margin": None,
     "target_mean": None, "target_low": None, "target_high": None,
     "analyst_count": None, "recommendation": None,
+    "currency": None, "financial_currency": None,
 }
 
 # (ticker, date) -> fundamentals dict. None of this needs sub-daily freshness
@@ -47,6 +48,8 @@ def get_fundamentals(ticker: str) -> dict:
         "target_high": info.get("targetHighPrice"),
         "analyst_count": info.get("numberOfAnalystOpinions"),
         "recommendation": info.get("recommendationKey"),
+        "currency": info.get("currency"),  # currency the traded price is quoted in
+        "financial_currency": info.get("financialCurrency"),  # currency the income statement is reported in
     }
     _cache[key] = result
     return result

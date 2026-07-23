@@ -154,8 +154,9 @@ class TestRunMorningReportCheapAndFallback:
         r = _result("NVDA", 1)
         r.valuation = ValuationResult(
             ticker="NVDA", trailing_pe=31.7,
-            pe_band=HistoricalBand(low=39.0, high=112.0, median=46.2, n=4, label="cheap"),
+            pe_band=HistoricalBand(low=39.0, high=112.0, median=46.2, mean=60.0, stdev=30.0, n=4, label="cheap"),
             peg=0.57, peg_label="cheap", verdict="cheap",
+            pe_score=15.0, peg_score=25.0, score=18.0, score_label="cheap",
         )
         return r
 

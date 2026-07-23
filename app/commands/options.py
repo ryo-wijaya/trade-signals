@@ -9,6 +9,7 @@ from app.commands.registry import command
 from app.config import load_favourites, load_config
 from app.fundamentals import format_pe
 from app.llm import openrouter_chat, build_leaps_prompt, build_wheel_prompt
+from app.market_calendar import market_hours_caveat
 from app.options import scan_leaps, scan_wheel
 from app.options.chain import days_to_months
 from app.telegram import send, now_sgt, _call
@@ -150,6 +151,9 @@ async def handle_options(args: list[str], chat_id: str) -> None:
         if not scan.error:
             if not has_candidates:
                 body += "\n\n<b>Rating: NO TRADE</b>\nNo strikes cleared the delta and liquidity filters."
+                caveat = market_hours_caveat()
+                if caveat:
+                    body += f"\n<i>{html.escape(caveat)}</i>"
             else:
                 summary = await openrouter_chat(prompt_fn(scan), max_tokens)
                 if summary:

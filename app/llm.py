@@ -50,11 +50,21 @@ _RULES = (
     "the setup.\n"
     "Factor in BOTH the overall technical rating shown above and the analyst price target's "
     "upside/downside versus the current price as concrete inputs to your verdict — these are "
-    "given specifically so you weigh them, not just the raw indicators.\n"
+    "given specifically so you weigh them, not just the raw indicators. Never restate the "
+    "price target's dollar figure or upside/downside percentage anywhere in your reply — it's "
+    "already shown to the user as its own data line; just let it shape whether you lean more "
+    "bullish or bearish.\n"
     "A downtrend regime raises the bar for BUY (falling-knife risk); mention it if relevant.\n"
+    "If a 'PE Quality' caveat is shown above, GAAP trailing earnings were meaningfully boosted "
+    "or hurt by a one-off (e.g. an investment mark-to-market gain, a write-off) — treat the "
+    "core/normalized P/E as the more reliable valuation read and temper conviction accordingly, "
+    "but never restate the specific core P/E number or percentage, since it's already shown "
+    "separately.\n"
     "This system's edge appears over 10-20 trading days — frame your verdict as a "
     "multi-week swing decision, not a day trade. A confirmed ENTRY state strengthens "
     "the technical case; an unconfirmed SETUP means the reversal hasn't started yet.\n"
+    "Write in short, direct sentences (aim for under ~20 words each) — never stuff multiple "
+    "clauses into one sentence with repeated 'and's/semicolons; each sentence carries one idea.\n"
 )
 
 
@@ -79,7 +89,12 @@ def _valuation_line(v) -> str:
                       f"{v.ps_band.low:.1f}-{v.ps_band.high:.1f} ({v.ps_band.label})")
     if not parts:
         return ""
-    return f"Valuation vs its own history: {'; '.join(parts)}. Overall: {v.verdict}."
+    line = f"Valuation vs its own history: {'; '.join(parts)}. Overall: {v.verdict}."
+    from app.valuation import format_pe_quality
+    quality = format_pe_quality(v)
+    if quality:
+        line += f" PE Quality: {quality}."
+    return line
 
 
 def _fundamentals_line(r: IndicatorResult) -> str:
@@ -128,17 +143,20 @@ def build_prompt(r: IndicatorResult, detailed: bool = False) -> str:
     header = "\n".join(lines) + "\n\n"
     if detailed:
         ask = (
-            'Reply in exactly this format: "BUY — reason" or "SELL — reason" or "HOLD — reason", '
-            "where reason is 3-4 sentences that MUST cite at least two specific numbers — from the "
-            "data above (valuation range, growth rate, the analyst price target's upside/downside, "
-            "or the overall technical rating) or from a current fact you "
-            "find (latest quarter's revenue/EPS, guidance, market share). Then name the most "
-            "important upcoming catalyst or recent development — do NOT name the next earnings "
-            "date as the catalyst unless it is within 2 weeks, and if it is, say what specifically "
-            "in that report will move the stock (segment growth, guidance, margin trend); "
-            "otherwise name a real non-earnings catalyst or recent development (product, "
-            "regulatory, competitive, macro). No hedging, no data disclaimers, plain text only, "
-            "no markdown, no citation numbers."
+            "Reply in exactly this structure, plain text, no markdown, no citation numbers, no "
+            'labels like "line 1": the FIRST line is only the verdict word — "BUY", "SELL", or '
+            '"HOLD" — nothing else on that line. Then a blank line. Then exactly 3 short '
+            "sentences, each on its own line: the first covers the technical/setup read, the "
+            "second covers valuation/fundamentals, the third names the most important upcoming "
+            "catalyst or recent development. Together these 3 sentences MUST cite at least two "
+            "specific numbers — from the data above (valuation range, growth rate, or the overall "
+            "technical rating; NOT the analyst price target figure, which is shown separately and "
+            "must not be restated) or from a current fact you find (latest quarter's revenue/EPS, "
+            "guidance, market share). Do NOT name the next earnings date as the catalyst unless it "
+            "is within 2 weeks, and if it is, say what specifically in that report will move the "
+            "stock (segment growth, guidance, margin trend); otherwise name a real non-earnings "
+            "catalyst or recent development (product, regulatory, competitive, macro). No "
+            "hedging, no data disclaimers."
         )
     else:
         ask = (
@@ -326,9 +344,14 @@ _DEEPDIVE_ASK = (
     "re-deriving them:\n"
     "1. Technical Setup — read the indicators, trend, confirmation gates, and overall rating "
     "above; is this a high-conviction setup or a weak one, and at what price does that change.\n"
-    "2. Fundamentals & Valuation — judge the stock using the valuation-vs-history, growth/margin "
-    "numbers, and the analyst price target's upside/downside versus the current price above; "
-    "cite the specific figures that drive your view.\n"
+    "2. Fundamentals & Valuation — judge the stock using the valuation-vs-history and "
+    "growth/margin numbers above, cite the specific figures that drive your view; you may let the "
+    "analyst price target above inform whether the setup looks more or less attractive, but do "
+    "NOT restate its dollar figure or upside/downside percentage — it's already shown separately. "
+    "If a PE Quality caveat is shown above, note briefly that GAAP earnings were distorted by a "
+    "one-off (name the type of item — investment gain, write-off, etc. — if the data indicates "
+    "which) and that the core/normalized P/E is the more trustworthy read, but do NOT restate the "
+    "specific core P/E number or percentage.\n"
     "3. Options & Sentiment — what the IV/HV and put/call positioning above imply about how the "
     "options market is pricing risk right now.\n"
     "4. News, Catalysts & Competition — the most important recent development, the next real "
@@ -336,8 +359,9 @@ _DEEPDIVE_ASK = (
     "matters), and how this company stacks up against its 2-3 closest competitors right now.\n"
     "5. Risks & Macro — the single biggest risk to this thesis plus any sector/macro force that "
     "matters right now, stated plainly.\n\n"
-    "Each section: 1-3 sentences, every claim anchored to a number or named fact — no filler; if "
-    "a section genuinely has nothing material, one short sentence saying so. It's fine to "
+    "Each section: 1-3 SHORT, direct sentences (never stuff multiple clauses into one sentence "
+    "with repeated 'and's/semicolons), every claim anchored to a number or named fact — no "
+    "filler; if a section genuinely has nothing material, one short sentence saying so. It's fine to "
     "conclude the setup is mixed or unattractive. Then add exactly one line starting "
     "\"Trade Plan:\" giving an attractive entry zone as a specific price or range, derived from "
     "the actual levels above (Bollinger bands, EMAs, valuation range) — no target or stop, just "
@@ -395,16 +419,22 @@ def build_deepdive_prompt(r: IndicatorResult, snapshot) -> str:
 
 _CHEAP_STOCK_ASK = (
     "The data above already produced a computed valuation verdict for this stock, based on P/E, "
-    "PEG, and P/S all measured against its OWN historical range/growth, not the market's. Write a "
-    "genuinely reasoned paragraph (4-6 sentences) explaining WHY this stock reads that way, "
-    "weighing ALL of: the P/E-vs-its-own-history read, the PEG read, the P/S-vs-its-own-history "
-    "read, its growth/margin trajectory, the analyst price target's upside or downside versus the "
-    "current price, and the stock's overall technical rating (does an oversold/overbought read "
-    "reinforce or contradict the valuation picture?). If any factor cuts against the computed "
-    "verdict, say so explicitly rather than ignoring it — a genuinely balanced analysis, not a "
-    "one-sided pitch. Do not invent a different cheap/fair/expensive label than the one already "
-    "computed above; your job is to explain and contextualize it, not override it. Plain text "
-    "only, no markdown, no citation numbers, no headers."
+    "PEG, and P/S all measured against its OWN historical range/growth, not the market's. Reply "
+    "in plain text, no markdown, no citation numbers, no headers, as exactly 4 short SEPARATE "
+    "sentences, each on its own line (never stuff multiple clauses into one sentence with "
+    "repeated 'and's/semicolons) explaining WHY this stock reads that way:\n"
+    "1. The P/E-vs-its-own-history read and the PEG read together.\n"
+    "2. The P/S-vs-its-own-history read and the growth/margin trajectory together.\n"
+    "3. The analyst price target's upside or downside versus the current price, and the stock's "
+    "overall technical rating — does an oversold/overbought read reinforce or contradict the "
+    "valuation picture?\n"
+    "4. A closing sentence stating plainly whether these factors reinforce or cut against the "
+    "computed verdict — if any factor cuts against it, say so explicitly rather than ignoring "
+    "it, a genuinely balanced read, not a one-sided pitch.\n"
+    "Do not invent a different cheap/fair/expensive label than the one already computed above; "
+    "your job is to explain and contextualize it, not override it. Never restate the analyst "
+    "price target's dollar figure or upside/downside percentage anywhere in your reply — it's "
+    "already shown to the user as its own data line; simply let it inform your reasoning."
 )
 
 
@@ -430,16 +460,22 @@ def build_cheap_stock_prompt(r: IndicatorResult) -> str:
 
 _CHEAP_PORTFOLIO_ASK = (
     "Each stock above already has a computed valuation verdict (0=cheapest, 100=most expensive, "
-    "vs its OWN history) and technical rating. Write a genuinely reasoned portfolio-level summary "
-    "(5-7 sentences) — not a per-ticker recap, a synthesis: which names are genuinely cheap AND "
-    "showing a supportive technical/growth picture (the strongest combination), which look cheap "
-    "on paper but carry a warning sign worth flagging (weak growth, a falling or unsupportive "
-    "price target, a deteriorating technical rating), and whether the expensive names' premium "
-    "looks justified by growth/analyst targets or just looks rich. Weigh the analyst price targets "
-    "and overall ratings shown for each name, not just the valuation score alone. End with one "
-    "sentence naming the single most attractive name and the single one most worth trimming or "
-    "avoiding, with a one-line reason each. Plain text only, no markdown, no bullets, no citation "
-    "numbers."
+    "vs its OWN history) and technical rating. Reply in plain text, no markdown, no bullets, no "
+    "citation numbers, as a genuinely reasoned portfolio-level synthesis — NOT a per-ticker "
+    "recap — written as up to 5 short SEPARATE sentences, each on its own line (never stuff "
+    "multiple clauses into one sentence with repeated 'and's/semicolons):\n"
+    "- Which names are genuinely cheap AND showing a supportive technical/growth picture (the "
+    "strongest combination).\n"
+    "- Which look cheap on paper but carry a warning sign worth flagging (weak growth, a falling "
+    "or unsupportive price target, a deteriorating technical rating).\n"
+    "- Whether the expensive names' premium looks justified by growth/analyst targets or just "
+    "looks rich.\n"
+    "Weigh the analyst price targets and overall ratings shown for each name, not just the "
+    "valuation score alone — but do NOT restate any name's specific target dollar figure or "
+    "upside/downside percentage, since those are already shown separately; describe the read "
+    "qualitatively (e.g. 'a supportive target') instead. End with one final line naming the "
+    "single most attractive name and the single one most worth trimming or avoiding, with a "
+    "one-line reason each."
 )
 
 

@@ -3,13 +3,14 @@ import contextlib
 import html
 import logging
 import os
+import re
 from contextvars import ContextVar
 from datetime import datetime
 import httpx
 import pytz
-from app.fundamentals import format_pe
+from app.fundamentals import format_pe, format_target
 from app.indicators.engine import IndicatorResult
-from app.valuation import format_valuation
+from app.valuation import format_valuation, format_pe_quality
 
 log = logging.getLogger(__name__)
 
@@ -128,13 +129,34 @@ def signal_line(r: IndicatorResult) -> str:
     return "Signal: none — neutral. No action."
 
 
+_LEADING_VERDICT_RE = re.compile(r"^(BUY|SELL|HOLD)\b")
+
+
+def _highlight_leading_verdict(escaped_text: str) -> str:
+    """Bolds a leading verdict word ('BUY'/'SELL'/'HOLD' at the very start of
+    a verdict-first AI reply) so it visually pops instead of blending into
+    the paragraph — deterministic post-processing, not reliant on the AI
+    remembering to add its own formatting (it's told to reply in plain text,
+    no markdown, since Telegram HTML mode doesn't render markdown syntax).
+    Operates on already-HTML-escaped text, mirroring
+    app.commands.options._highlight_closing_verdict."""
+    m = _LEADING_VERDICT_RE.match(escaped_text)
+    if not m:
+        return escaped_text
+    return f"<b>{m.group(0)}</b>" + escaped_text[m.end():]
+
+
 def _block(r: IndicatorResult) -> str:
     rows = [f"{label:<10}  {html.escape(sig.display)}" for _, label, sig in r.signals]
     rows.append(f"{'P/E':<10}  {format_pe(r.trailing_pe, r.forward_pe)}")
+    quality = format_pe_quality(r.valuation)
+    if quality:
+        rows.append(f"{'PE Quality':<10}  {html.escape(quality)}")
     rows.append(f"{'Valuation':<10}  {html.escape(format_valuation(r.valuation))}")
+    rows.append(f"{'Target':<10}  {html.escape(format_target(r.fundamentals, r.price))}")
 
     # Rules with an empty reason don't apply to the current side — hidden.
-    applicable = [(n, p, re) for n, p, re in r.rule_results if re]
+    applicable = [(n, p, reason) for n, p, reason in r.rule_results if reason]
     if applicable:
         rows.append("")
         for name, passed, reason in applicable:
@@ -162,7 +184,7 @@ def build_stock_messages(
             f"<i>{html.escape(signal_line(r))}</i>",
         ]
         if summaries and (summary := summaries.get(r.ticker)):
-            lines.append(f"\n{html.escape(summary)}")
+            lines.append(f"\n{_highlight_leading_verdict(html.escape(summary))}")
         messages.append("\n".join(lines))
     return messages
 
@@ -178,3 +200,25 @@ def build_priority_alert(r: IndicatorResult) -> str:
         _block(r),
         f"<i>{html.escape(signal_line(r))}</i>",
     ])
+
+
+def build_action_alert(r: IndicatorResult, ai_reason: str = "") -> str:
+    """A watchlist ticker that cleared EVERY Action Alert bar: cheap
+    valuation, a confirmed technical oversold bounce, positive growth,
+    good analyst consensus, and (when available) AI agreement -- a
+    deliberately rare, high-conviction combination, not a running reminder.
+    _block already carries the P/E, valuation score/label, and target rows,
+    so only the AI's own reasoning needs adding on top."""
+    header = f"ACTION ALERT: <b>{html.escape(r.ticker)}</b>"
+    if r.trend_label:
+        header += f"  ·  {html.escape(r.trend_label)}"
+    lines = [
+        header,
+        f"${r.price:.2f}",
+        "",
+        _block(r),
+        f"<i>{html.escape(signal_line(r))}</i>",
+    ]
+    if ai_reason:
+        lines.append(f"\n{_highlight_leading_verdict(html.escape(ai_reason))}")
+    return "\n".join(lines)

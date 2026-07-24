@@ -10,10 +10,10 @@ from app.indicators.engine import IndicatorResult
 from app.valuation import ValuationResult, HistoricalBand
 
 
-def _result(ticker: str, price: float = 100.0, valuation=None) -> IndicatorResult:
+def _result(ticker: str, price: float = 100.0, valuation=None, fundamentals=None) -> IndicatorResult:
     signals = [("BB", "Bollinger", SignalResult(signal=0, display="x"))]
     return IndicatorResult(ticker=ticker, price=price, prev_close=price - 1,
-                           signals=signals, valuation=valuation)
+                           signals=signals, valuation=valuation, fundamentals=fundamentals or {})
 
 
 def _cheap_valuation(**overrides) -> ValuationResult:
@@ -169,6 +169,17 @@ class TestBuildValuationRanking:
         assert "below its entire 4yr range" in report
         assert "PEG" in report
         assert "P/S" in report
+
+    def test_analyst_target_shown_as_deterministic_line_not_ai_prose(self):
+        fundamentals = {"target_mean": 303.0, "analyst_count": 58, "recommendation": "strong_buy"}
+        report = build_valuation_ranking(
+            [_result("NVDA", 212.06, _cheap_valuation(), fundamentals=fundamentals)], "watchlist",
+        )
+        assert "Analyst target: $303 (+43% vs price) · 58 analysts, strong buy" in report
+
+    def test_analyst_target_omitted_when_unavailable(self):
+        report = build_valuation_ranking([_result("NVDA", 212.06, _cheap_valuation())], "watchlist")
+        assert "Analyst target" not in report
 
     def test_only_cheap_filters_to_cheap_bands_and_titles_differently(self):
         results = [

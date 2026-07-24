@@ -15,7 +15,7 @@ from app.llm import build_leaps_prompt, openrouter_chat
 from app.market_calendar import is_trading_day
 from app.options import scan_leaps
 from app.relative_strength import rank_relative_strength, format_relative_strength
-from app.telegram import build_stock_messages, build_priority_alert, send, now_sgt
+from app.telegram import build_stock_messages, build_action_alert, send, now_sgt
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -134,42 +134,126 @@ def run_earnings_report() -> None:
     _run(_send)
 
 
-# (ticker, side) -> date last alerted; the 30-min check re-fires while a trigger
-# state holds, so without this a confirmed setup would repeat all day.
-_alerted: dict[tuple[str, str], str] = {}
+# ticker -> whether the CURRENT qualifying streak has already been resolved
+# (an alert was sent, or the AI outlook explicitly vetoed it). Reset the
+# moment a ticker drops OUT of the deterministic criteria below, so the next
+# time it freshly re-qualifies gets its own AI check rather than being
+# silenced forever. A transient AI-call failure deliberately does NOT mark a
+# ticker resolved, so it retries on the next 30-min check instead of losing
+# a genuine high-conviction alert to a network hiccup.
+_action_resolved: dict[str, bool] = {}
+
+# Yahoo's recommendationKey vocabulary is a small fixed set; only these two
+# count as "good analyst consensus" for an Action Alert.
+_ACTION_ANALYST_LABELS = {"buy", "strong_buy"}
 
 
-def dedupe_alerts(alerts: list[IndicatorResult], today: str) -> list[IndicatorResult]:
+def meets_action_criteria(r: IndicatorResult, min_signals: int, min_growth: float = 0.0,
+                           analyst_labels: set[str] | None = None) -> bool:
+    """The 4 deterministic legs of an Action Alert -- cheap valuation,
+    technically oversold with a CONFIRMED bounce (buy side only, never the
+    sell side), a positive growth trajectory, and a Buy/Strong Buy analyst
+    consensus. The 5th leg (AI outlook) is checked separately in
+    _confirm_ai_outlook since it needs a network call."""
+    analyst_labels = analyst_labels or _ACTION_ANALYST_LABELS
+    v, f = r.valuation, r.fundamentals
+    if not v or v.score_label not in ("very cheap", "cheap"):
+        return False
+    if r.score < min_signals or not r.rules_passed:
+        return False
+    if not f or f.get("revenue_growth") is None or f.get("earnings_growth") is None:
+        return False
+    if f["revenue_growth"] <= min_growth or f["earnings_growth"] <= min_growth:
+        return False
+    if f.get("recommendation") not in analyst_labels:
+        return False
+    return True
+
+
+def action_candidates(
+    results: list[IndicatorResult], min_signals: int, min_growth: float = 0.0,
+    analyst_labels: set[str] | None = None,
+) -> list[IndicatorResult]:
+    """Tickers meeting every deterministic Action Alert criterion whose
+    current qualifying streak hasn't been resolved yet -- not every ticker
+    currently qualifying, which would re-check (and re-alert) every 30
+    minutes for as long as a stock stays qualified."""
     fresh = []
-    for r in alerts:
-        key = (r.ticker, "buy" if r.score > 0 else "sell")
-        if _alerted.get(key) != today:
-            _alerted[key] = today
-            fresh.append(r)
+    for r in results:
+        if meets_action_criteria(r, min_signals, min_growth, analyst_labels):
+            if not _action_resolved.get(r.ticker, False):
+                fresh.append(r)
+        else:
+            _action_resolved.pop(r.ticker, None)
     return fresh
 
 
-def run_priority_check() -> None:
+async def _confirm_ai_outlook(r: IndicatorResult) -> tuple[bool, bool, str]:
+    """Final Action Alert gate: does the AI's own read of this stock agree
+    it's a BUY? Returns (resolved, passed, reason). resolved=False means a
+    transient failure (network/API/empty reply) -- the caller must NOT mark
+    the ticker resolved, so it retries next cycle instead of either
+    silently vetoing or falsely confirming a real high-conviction setup.
+    Degrades to (resolved=True, passed=True) when OPENROUTER_API_KEY isn't
+    set, since the other 4 legs are already a strict bar on their own."""
+    if not os.getenv("OPENROUTER_API_KEY", ""):
+        return True, True, ""
+    from app.llm import build_prompt, openrouter_chat
+    from app.config import load_config
+    max_tokens = load_config().get("llm", {}).get("detailed_max_tokens", 320)
+    try:
+        summary = await openrouter_chat(build_prompt(r, detailed=True), max_tokens)
+    except Exception as exc:
+        log.error("action alert AI check failed for %s: %s", r.ticker, exc)
+        return False, False, ""
+    if not summary:
+        return False, False, ""
+    if summary.strip().upper().startswith("BUY"):
+        return True, True, summary
+    return True, False, summary
+
+
+def run_action_alert_check() -> None:
+    """Runs on the same cadence as the old priority check (configurable via
+    /priority). Replaces the separate technical-only and valuation-only
+    pushes with ONE alert that requires ALL of: cheap valuation, confirmed
+    technical oversold bounce, healthy growth, good analyst consensus, and
+    (when an API key is set) AI agreement -- a deliberately rare,
+    high-conviction combination rather than a running reminder."""
     if not is_trading_day(datetime.now(_tz()).date()):
-        log.info("priority_check skipped: non-trading day")
+        log.info("action_alert_check skipped: non-trading day")
         return
-    log.info("priority_check started")
-    _, priority_alerts = collect_results()
-    priority_alerts = dedupe_alerts(priority_alerts, datetime.now(_tz()).strftime("%Y-%m-%d"))
-    if priority_alerts:
-        log.info("priority_check: %d alert(s): %s", len(priority_alerts), [r.ticker for r in priority_alerts])
-        async def _send():
-            for alert in priority_alerts:
-                await send(build_priority_alert(alert))
-        _run(_send)
-    else:
-        log.info("priority_check: no alerts")
+    log.info("action_alert_check started")
+    cfg = _scfg()
+    min_signals = cfg.get("priority_min_signals", 2)
+    min_growth = cfg.get("action_alert_min_growth", 0.0)
+    analyst_labels = set(cfg.get("action_alert_analyst_labels", _ACTION_ANALYST_LABELS))
+    results, _ = collect_results()
+    candidates = action_candidates(results, min_signals, min_growth, analyst_labels)
+    if not candidates:
+        log.info("action_alert_check: no candidates")
+        return
+    log.info("action_alert_check: %d candidate(s): %s", len(candidates), [r.ticker for r in candidates])
+
+    async def _send():
+        for r in candidates:
+            resolved, passed, ai_reason = await _confirm_ai_outlook(r)
+            if not resolved:
+                log.warning("action_alert: %s AI check inconclusive, retrying next cycle", r.ticker)
+                continue
+            _action_resolved[r.ticker] = True
+            if passed:
+                log.info("action_alert: %s confirmed", r.ticker)
+                await send(build_action_alert(r, ai_reason))
+            else:
+                log.info("action_alert: %s vetoed by AI outlook", r.ticker)
+    _run(_send)
 
 
 def reschedule_priority(interval_minutes: int) -> None:
     save_priority_interval(interval_minutes)
     if _scheduler:
-        _scheduler.reschedule_job("priority_check", trigger=_priority_trigger(interval_minutes))
+        _scheduler.reschedule_job("action_alert_check", trigger=_priority_trigger(interval_minutes))
 
 
 def _leaps_alert_trigger() -> CronTrigger:
@@ -241,7 +325,7 @@ def create_scheduler() -> BackgroundScheduler:
     global _scheduler
     _scheduler = BackgroundScheduler(timezone=_tz())
     _scheduler.add_job(run_morning_report, _morning_trigger(), id="morning_report")
-    _scheduler.add_job(run_priority_check, _priority_trigger(load_priority_interval()), id="priority_check")
+    _scheduler.add_job(run_action_alert_check, _priority_trigger(load_priority_interval()), id="action_alert_check")
     _scheduler.add_job(run_leaps_alert_check, _leaps_alert_trigger(), id="leaps_alert_check")
     _scheduler.add_job(
         run_earnings_report,

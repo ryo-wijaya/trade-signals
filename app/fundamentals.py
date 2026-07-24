@@ -72,3 +72,23 @@ def format_pe(trailing: float | None, forward: float | None) -> str:
     if trailing is None and forward is None:
         return "n/a"
     return f"{_fmt_leg(trailing)} / {_fmt_leg(forward)}"
+
+
+def format_target(fundamentals: dict, price: float) -> str:
+    """Analyst mean price target and its upside/downside vs the current
+    price, as a deterministic display line shown alongside the technical
+    data — not something the AI restates in its own words, so the number
+    only ever appears once and always exactly matches what was actually
+    fetched."""
+    target = fundamentals.get("target_mean") if fundamentals else None
+    if not target or price <= 0:
+        return "n/a"
+    upside = (target - price) / price
+    text = f"${target:.0f} ({upside:+.0%} vs price)"
+    count = fundamentals.get("analyst_count")
+    if count:
+        text += f" · {count} analysts"
+    rec = fundamentals.get("recommendation")
+    if rec:
+        text += f", {rec.replace('_', ' ')}"
+    return text

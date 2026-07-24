@@ -4,6 +4,7 @@ import statistics
 from dataclasses import dataclass
 from datetime import date
 
+import pandas as pd
 import yfinance as yf
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,15 @@ _SCORE_WEIGHTS = {"pe": 0.35, "forward_pe": 0.15, "peg": 0.25, "ps": 0.25}
 # calibrated so PEG 2.0 (the "expensive" line) -> ~90 and PEG 0.5 -> ~25.
 _PEG_SCORE_MIDPOINT = 1.0
 _PEG_SCORE_STEEPNESS = 2.2
+
+# How much of TTM GAAP net income has to come from unusual/non-operating
+# items (investment mark-to-market gains, write-offs, legal settlements,
+# etc.) before the trailing P/E is flagged as not representative of
+# recurring earnings power. Confirmed live: GOOGL's TTM GAAP net income was
+# ~26% inflated by equity-investment gains (SpaceX/Anthropic stakes),
+# PFE's was ~106% suppressed by one-off charges, while NVDA/MSFT/META sat
+# under 2% -- 15% cleanly separates "real one-off" from normal noise.
+_PE_QUALITY_DISTORTION_THRESHOLD = 0.15
 
 _SCORE_BANDS = (  # (upper bound exclusive, label) — walked in order
     (20, "very cheap"), (40, "cheap"), (60, "fair"), (80, "expensive"), (101, "very expensive"),
@@ -86,6 +96,18 @@ class ValuationResult:
     forward_pe_score: float | None = None
     peg_score: float | None = None
     ps_score: float | None = None
+    # Earnings-quality read: core (normalized, ex-unusual-items) trailing P/E
+    # vs a GAAP trailing P/E computed the SAME self-consistent way (both from
+    # summing the last 4 quarters of the quarterly income statement) -- see
+    # _pe_quality. "unknown" when there wasn't enough quarterly data to judge
+    # (e.g. ETFs); "normal" when unusual items were below the distortion
+    # threshold; "inflated"/"suppressed" when GAAP net income was boosted or
+    # hurt by a one-off beyond that threshold. Never scored/voted on, purely
+    # a caveat about how trustworthy the reported P/E is.
+    core_pe: float | None = None
+    gaap_ttm_pe: float | None = None
+    pe_distortion_pct: float | None = None
+    earnings_quality_label: str = "unknown"
     error: str | None = None
 
 
@@ -179,6 +201,58 @@ def _score_label(score: float | None) -> str:
         if score < upper:
             return label
     return _SCORE_BANDS[-1][1]
+
+
+def _pe_quality(
+    stmt_q, price: float | None, threshold: float,
+) -> tuple[float | None, float | None, float | None, str]:
+    """Core (normalized, ex-unusual-items) trailing P/E compared against a
+    GAAP trailing P/E computed the SAME self-consistent way -- both derived
+    by summing the last 4 quarters of the quarterly income statement, rather
+    than comparing against yfinance's separately-sourced headline
+    trailingPE, which uses its own black-box TTM window and can disagree by
+    a wide margin (confirmed live: GOOGL's headline trailingEps of 19.94
+    didn't match a plain sum of its last 4 quarters' Diluted EPS of ~13.1 --
+    mixing the two sources would produce a misleading comparison). Returns
+    (core_pe, gaap_ttm_pe, distortion_pct, label); label is "unknown" when
+    there isn't enough quarterly data (e.g. ETFs have no income statement at
+    all), "normal" when unusual items are under `threshold` of TTM GAAP net
+    income, "inflated" when a one-off GAIN pushed GAAP income (and so the
+    reported P/E) below its recurring level, "suppressed" when a one-off
+    CHARGE pushed it above."""
+    if price is None or stmt_q is None or stmt_q.empty:
+        return None, None, None, "unknown"
+    needed = {"Net Income", "Normalized Income", "Diluted Average Shares"}
+    if not needed.issubset(set(stmt_q.index)):
+        return None, None, None, "unknown"
+
+    ni_row = stmt_q.loc["Net Income"]
+    norm_row = stmt_q.loc["Normalized Income"]
+    shares_row = stmt_q.loc["Diluted Average Shares"]
+    valid_cols = [
+        c for c in stmt_q.columns
+        if pd.notna(ni_row.get(c)) and pd.notna(norm_row.get(c)) and pd.notna(shares_row.get(c))
+    ][:4]
+    if len(valid_cols) < 4:
+        return None, None, None, "unknown"
+
+    ttm_ni = sum(ni_row[c] for c in valid_cols)
+    ttm_norm = sum(norm_row[c] for c in valid_cols)
+    shares = shares_row[valid_cols[0]]
+    if not shares or ttm_ni == 0:
+        return None, None, None, "unknown"
+
+    gaap_ttm_pe = price / (ttm_ni / shares) if ttm_ni > 0 else None
+    core_pe = price / (ttm_norm / shares) if ttm_norm > 0 else None
+    distortion_pct = (ttm_ni - ttm_norm) / abs(ttm_ni)
+
+    if abs(distortion_pct) < threshold:
+        label = "normal"
+    elif distortion_pct > 0:
+        label = "inflated"
+    else:
+        label = "suppressed"
+    return core_pe, gaap_ttm_pe, distortion_pct, label
 
 
 def _price_on_or_before(closes, target_date) -> float | None:
@@ -336,6 +410,16 @@ def get_valuation(ticker: str) -> ValuationResult:
         result.ps_band.label if result.ps_band else None,
     ])
 
+    quality_threshold = cfg.get("pe_quality_distortion_threshold", _PE_QUALITY_DISTORTION_THRESHOLD)
+    try:
+        stmt_q = t.quarterly_income_stmt
+    except Exception as exc:
+        log.warning("quarterly income stmt fetch failed for %s: %s", ticker, exc)
+        stmt_q = None
+    current_price = float(closes.iloc[-1]) if not closes.empty else None
+    (result.core_pe, result.gaap_ttm_pe, result.pe_distortion_pct,
+     result.earnings_quality_label) = _pe_quality(stmt_q, current_price, quality_threshold)
+
     components = []
     if result.pe_band and result.trailing_pe is not None:
         result.pe_score = _zscore_percentile(result.trailing_pe, result.pe_band.mean, result.pe_band.stdev)
@@ -374,3 +458,22 @@ def format_valuation(v: "ValuationResult | None") -> str:
     if v.ps_band:
         parts.append(f"P/S {v.ps_band.label}")
     return f"{v.verdict}  ({' · '.join(parts)})" if parts else v.verdict
+
+
+def format_pe_quality(v: "ValuationResult | None") -> str:
+    """Deterministic earnings-quality caveat shown as its own row alongside
+    the technical data (not something the AI restates in its own words) --
+    empty whenever the distortion is below threshold or there wasn't enough
+    quarterly data to judge, so the row only appears for tickers where it
+    actually matters (e.g. GOOGL after a large investment mark-to-market
+    gain, PFE after a large litigation charge)."""
+    if v is None or v.earnings_quality_label in ("unknown", "normal"):
+        return ""
+    pct = v.pe_distortion_pct
+    if v.earnings_quality_label == "inflated":
+        text = f"GAAP earnings boosted by one-off gains (~{pct:.0%} of TTM net income)"
+    else:
+        text = f"GAAP earnings hurt by one-off charges (~{abs(pct):.0%} of TTM net income)"
+    if v.core_pe is not None and v.gaap_ttm_pe is not None:
+        text += f" — core P/E ~{v.core_pe:.1f} vs GAAP-TTM P/E ~{v.gaap_ttm_pe:.1f}"
+    return text

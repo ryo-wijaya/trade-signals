@@ -39,7 +39,7 @@ async def handle_config(args: list[str], chat_id: str) -> None:
         f"  Daily {morning_fmt} Mon–Fri\n"
         f"  Scope: favourites only ({len(favourites)} tickers)\n"
         f"  Not manually triggerable — use /signalsplus or /news on demand\n\n"
-        f"<b>Priority Alert</b>\n"
+        f"<b>Action Alert</b> (cheap + oversold-confirmed + growth + analyst consensus + AI outlook)\n"
         f"  Every {priority}min · Mon–Fri {open_fmt}–{close_fmt}\n"
         f"  Change: {valid_priorities}\n\n"
         f"<b>Cheap LEAPS Alert</b>\n"

@@ -7,9 +7,9 @@ import pytz
 
 import app.valuation as valuation_mod
 from app.valuation import (
-    get_valuation, format_valuation, HistoricalBand, ValuationResult,
+    get_valuation, format_valuation, format_pe_quality, HistoricalBand, ValuationResult,
     _historical_band, _classify_position, _peg_label, _overall_verdict,
-    _zscore_percentile, _peg_score, _composite_score, _score_label,
+    _zscore_percentile, _peg_score, _composite_score, _score_label, _pe_quality,
 )
 
 
@@ -24,6 +24,13 @@ def _stmt(dates, eps_values, revenue_values):
     })
 
 
+def _qstmt(dates, ni_values, norm_values, shares_values):
+    return pd.DataFrame({
+        d: {"Net Income": ni, "Normalized Income": norm, "Diluted Average Shares": shares}
+        for d, ni, norm, shares in zip(dates, ni_values, norm_values, shares_values)
+    })
+
+
 def _closes(dates, prices):
     tz = pytz.timezone("America/New_York")
     idx = pd.DatetimeIndex([pd.Timestamp(d).tz_localize(tz) for d in dates])
@@ -35,6 +42,7 @@ class _FakeTicker:
         pass
 
     income_stmt = None
+    quarterly_income_stmt = None
     _closes = None
 
     def history(self, **kwargs):
@@ -50,9 +58,10 @@ def _valuation_cfg(**overrides):
     return {"valuation": defaults}
 
 
-def _wire(monkeypatch, stmt, closes, fund, cfg=None):
+def _wire(monkeypatch, stmt, closes, fund, cfg=None, qstmt=None):
     class Ticker(_FakeTicker):
         income_stmt = stmt
+        quarterly_income_stmt = qstmt
         _closes = closes
 
     monkeypatch.setattr(valuation_mod, "yf", SimpleNamespace(Ticker=Ticker))
@@ -252,6 +261,102 @@ class TestOverallVerdict:
 
     def test_unknowns_excluded_from_tie_break(self):
         assert _overall_verdict(["cheap", "unknown", None]) == "cheap"
+
+
+class TestPeQuality:
+    def test_no_data_is_unknown(self):
+        assert _pe_quality(None, 100.0, 0.15) == (None, None, None, "unknown")
+
+    def test_no_price_is_unknown(self):
+        dates = _dates((2025, 12, 31), (2025, 9, 30), (2025, 6, 30), (2025, 3, 31))
+        q = _qstmt(dates, ni_values=[10e9] * 4, norm_values=[10e9] * 4, shares_values=[1e9] * 4)
+        assert _pe_quality(q, None, 0.15) == (None, None, None, "unknown")
+
+    def test_missing_required_rows_is_unknown(self):
+        q = pd.DataFrame({pd.Timestamp(2025, 12, 31): {"Net Income": 10e9}})
+        assert _pe_quality(q, 100.0, 0.15) == (None, None, None, "unknown")
+
+    def test_fewer_than_four_valid_quarters_is_unknown(self):
+        dates = _dates((2025, 12, 31), (2025, 9, 30), (2025, 6, 30))
+        q = _qstmt(dates, ni_values=[10e9] * 3, norm_values=[10e9] * 3, shares_values=[1e9] * 3)
+        assert _pe_quality(q, 100.0, 0.15) == (None, None, None, "unknown")
+
+    def test_small_distortion_is_normal(self):
+        dates = _dates((2025, 12, 31), (2025, 9, 30), (2025, 6, 30), (2025, 3, 31))
+        q = _qstmt(dates, ni_values=[10.5e9, 10e9, 10e9, 10e9],  # 5% distortion, under threshold
+                    norm_values=[10e9] * 4, shares_values=[1e9] * 4)
+        _, _, _, label = _pe_quality(q, 100.0, 0.15)
+        assert label == "normal"
+
+    def test_large_gain_is_inflated(self):
+        # Mirrors GOOGL: a large one-off investment gain makes TTM GAAP net
+        # income much higher than normalized (core) net income -- the
+        # reported P/E looks cheaper than recurring earnings power supports.
+        dates = _dates((2026, 3, 31), (2025, 12, 31), (2025, 9, 30), (2025, 6, 30))
+        q = _qstmt(
+            dates, ni_values=[62.578e9, 34.455e9, 34.979e9, 28.196e9],
+            norm_values=[32.709e9, 32.439e9, 26.462e9, 27.048e9], shares_values=[12.238e9] * 4,
+        )
+        core_pe, gaap_pe, distortion, label = _pe_quality(q, 319.59, 0.15)
+        assert label == "inflated"
+        assert distortion > 0.15
+        assert core_pe > gaap_pe  # lower core earnings -> higher (richer) core P/E
+
+    def test_large_charge_is_suppressed(self):
+        # Mirrors PFE: a large one-off charge makes TTM GAAP net income much
+        # lower than normalized -- the reported P/E looks richer than
+        # recurring earnings power supports.
+        dates = _dates((2026, 3, 31), (2025, 12, 31), (2025, 9, 30), (2025, 6, 30))
+        q = _qstmt(
+            dates, ni_values=[2.687e9, -1.648e9, 3.541e9, 2.910e9],
+            norm_values=[3.325e9, 3.718e9, 5.063e9, 3.289e9], shares_values=[5.731e9] * 4,
+        )
+        core_pe, gaap_pe, distortion, label = _pe_quality(q, 24.975, 0.15)
+        assert label == "suppressed"
+        assert distortion < -0.15
+        assert core_pe < gaap_pe  # higher core earnings -> lower (cheaper) core P/E
+
+    def test_zero_ttm_net_income_is_unknown(self):
+        dates = _dates((2025, 12, 31), (2025, 9, 30), (2025, 6, 30), (2025, 3, 31))
+        q = _qstmt(dates, ni_values=[10e9, -10e9, 5e9, -5e9],  # sums to exactly 0
+                    norm_values=[10e9] * 4, shares_values=[1e9] * 4)
+        assert _pe_quality(q, 100.0, 0.15) == (None, None, None, "unknown")
+
+
+class TestFormatPeQuality:
+    def test_none_is_empty(self):
+        assert format_pe_quality(None) == ""
+
+    def test_unknown_label_is_empty(self):
+        assert format_pe_quality(ValuationResult(ticker="X")) == ""
+
+    def test_normal_label_is_empty(self):
+        v = ValuationResult(ticker="X", earnings_quality_label="normal")
+        assert format_pe_quality(v) == ""
+
+    def test_inflated_shows_gains_and_both_pe_figures(self):
+        v = ValuationResult(
+            ticker="GOOGL", earnings_quality_label="inflated", pe_distortion_pct=0.259,
+            core_pe=32.96, gaap_ttm_pe=24.41,
+        )
+        text = format_pe_quality(v)
+        assert "boosted by one-off gains (~26% of TTM net income)" in text
+        assert "core P/E ~33.0 vs GAAP-TTM P/E ~24.4" in text
+
+    def test_suppressed_shows_charges_and_uses_absolute_percent(self):
+        v = ValuationResult(
+            ticker="PFE", earnings_quality_label="suppressed", pe_distortion_pct=-1.055,
+            core_pe=9.3, gaap_ttm_pe=19.1,
+        )
+        text = format_pe_quality(v)
+        assert "hurt by one-off charges (~106% of TTM net income)" in text
+        assert "core P/E ~9.3 vs GAAP-TTM P/E ~19.1" in text
+
+    def test_distorted_without_computable_pe_omits_the_numeric_clause(self):
+        v = ValuationResult(ticker="X", earnings_quality_label="inflated", pe_distortion_pct=0.5)
+        text = format_pe_quality(v)
+        assert "boosted by one-off gains" in text
+        assert "core P/E" not in text
 
 
 class TestGetValuation:
@@ -643,6 +748,77 @@ class TestGetValuation:
 
         get_valuation("TEST")
         assert seen["period"] == "3y"
+
+
+class TestGetValuationEarningsQuality:
+    def setup_method(self):
+        valuation_mod._cache.clear()
+
+    def test_wires_inflated_flag_through_from_quarterly_stmt(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[1.0, 2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 319.59])
+        qdates = _dates((2026, 3, 31), (2025, 12, 31), (2025, 9, 30), (2025, 6, 30))
+        qstmt = _qstmt(
+            qdates, ni_values=[62.578e9, 34.455e9, 34.979e9, 28.196e9],
+            norm_values=[32.709e9, 32.439e9, 26.462e9, 27.048e9], shares_values=[12.238e9] * 4,
+        )
+        _wire(monkeypatch, stmt, closes, _fund(), qstmt=qstmt)
+
+        v = get_valuation("GOOGL")
+        assert v.earnings_quality_label == "inflated"
+        assert v.core_pe is not None and v.gaap_ttm_pe is not None
+        assert v.core_pe > v.gaap_ttm_pe
+
+    def test_no_quarterly_data_leaves_quality_unknown(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[1.0, 2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 70.0])
+        _wire(monkeypatch, stmt, closes, _fund())  # qstmt defaults to None
+
+        v = get_valuation("TEST")
+        assert v.earnings_quality_label == "unknown"
+        assert v.core_pe is None
+
+    def test_quarterly_fetch_failure_does_not_abort_valuation(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[1.0, 2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 70.0])
+
+        class Ticker:
+            def __init__(self, ticker):
+                pass
+
+            income_stmt = stmt
+
+            @property
+            def quarterly_income_stmt(self):
+                raise RuntimeError("network down")
+
+            def history(self, **kwargs):
+                return pd.DataFrame({"Close": closes})
+
+        monkeypatch.setattr(valuation_mod, "yf", SimpleNamespace(Ticker=Ticker))
+        monkeypatch.setattr("app.fundamentals.get_fundamentals", lambda ticker: _fund())
+        monkeypatch.setattr("app.config.load_config", lambda: _valuation_cfg())
+
+        v = get_valuation("TEST")
+        assert v.error is None  # the rest of valuation still succeeded
+        assert v.earnings_quality_label == "unknown"
+
+    def test_config_distortion_threshold_is_applied(self, monkeypatch):
+        dates = _dates((2023, 1, 31), (2024, 1, 31))
+        stmt = _stmt(dates, eps_values=[1.0, 2.0], revenue_values=[10e9, 12e9])
+        closes = _closes(dates, prices=[50.0, 100.0])
+        qdates = _dates((2025, 12, 31), (2025, 9, 30), (2025, 6, 30), (2025, 3, 31))
+        # 10% distortion -- "normal" under the default 15% threshold, but
+        # "inflated" once the configured threshold is tightened to 5%.
+        qstmt = _qstmt(qdates, ni_values=[10e9] * 4, norm_values=[9e9] * 4, shares_values=[1e9] * 4)
+        _wire(monkeypatch, stmt, closes, _fund(),
+              cfg=_valuation_cfg(pe_quality_distortion_threshold=0.05), qstmt=qstmt)
+
+        v = get_valuation("TEST")
+        assert v.earnings_quality_label == "inflated"
 
 
 class TestFormatValuation:

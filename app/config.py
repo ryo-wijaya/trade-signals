@@ -100,6 +100,7 @@ _DEFAULTS = {
         "score_weights": {"pe": 0.35, "forward_pe": 0.15, "peg": 0.25, "ps": 0.25},
         "peg_score_midpoint": 1.0,
         "peg_score_steepness": 2.2,
+        "pe_quality_distortion_threshold": 0.15,
     },
     "data": {
         "history_period": "400d",
@@ -121,6 +122,8 @@ _DEFAULTS = {
         "leaps_alert_minute": 30,
         "valid_priority_intervals": [15, 30, 60],
         "priority_min_signals": 2,
+        "action_alert_min_growth": 0.0,
+        "action_alert_analyst_labels": ["buy", "strong_buy"],
     },
     "display": {
         "timezone": "Asia/Singapore",

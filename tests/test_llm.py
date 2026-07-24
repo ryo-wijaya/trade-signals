@@ -161,6 +161,11 @@ class TestBuildPrompt:
         assert "the analyst price target's upside/downside" in prompt
         assert "the overall technical rating" in prompt
 
+    def test_rules_explain_pe_quality_caveat_without_restating_figures(self):
+        prompt = build_prompt(_result())
+        assert "treat the core/normalized P/E as the more reliable valuation read" in prompt
+        assert "never restate the specific core P/E number or percentage" in prompt
+
     def test_no_valuation_line_when_valuation_is_none(self):
         r = _result()
         assert r.valuation is None
@@ -186,8 +191,13 @@ class TestBuildPrompt:
     def test_detailed_ask_demands_two_numbers_and_bans_lazy_earnings_catalyst(self):
         prompt = build_prompt(_result(), detailed=True)
         assert "MUST cite at least two specific numbers" in prompt
-        assert "do NOT name the next earnings date as the catalyst unless it is within 2 weeks" in prompt
+        assert "Do NOT name the next earnings date as the catalyst unless it" in prompt
         assert "say what specifically in that report will move the stock" in prompt
+
+    def test_detailed_ask_structures_verdict_word_then_three_short_lines(self):
+        prompt = build_prompt(_result(), detailed=True)
+        assert "the FIRST line is only the verdict word" in prompt
+        assert "exactly 3 short sentences, each on its own line" in prompt
 
     def test_short_ask_unchanged_no_two_number_requirement(self):
         prompt = build_prompt(_result(), detailed=False)
@@ -254,6 +264,17 @@ class TestValuationLine:
         v = _valuation(pe_band=None, peg=-0.5, peg_label="unknown", verdict="fair")
         line = _valuation_line(v)
         assert "PEG" not in line
+
+    def test_pe_quality_clause_appended_when_distorted(self):
+        v = _valuation(earnings_quality_label="inflated", pe_distortion_pct=0.26,
+                        core_pe=33.0, gaap_ttm_pe=24.4)
+        line = _valuation_line(v)
+        assert "PE Quality: GAAP earnings boosted by one-off gains" in line
+        assert "core P/E ~33.0 vs GAAP-TTM P/E ~24.4" in line
+
+    def test_pe_quality_clause_omitted_when_normal(self):
+        v = _valuation(earnings_quality_label="normal")
+        assert "PE Quality" not in _valuation_line(v)
 
 
 class TestTrimIncomplete:
@@ -471,13 +492,22 @@ class TestBuildDeepdivePrompt:
 
     def test_sections_are_shorter_and_data_anchored(self):
         prompt = build_deepdive_prompt(_result(), self._snapshot())
-        assert "1-3 sentences" in prompt
+        assert "1-3 SHORT, direct sentences" in prompt
         assert "anchored to a number or named fact" in prompt
 
     def test_asks_for_overall_rating_and_price_target(self):
         prompt = build_deepdive_prompt(_result(), self._snapshot())
         assert "confirmation gates, and overall rating" in prompt
-        assert "the analyst price target's upside/downside versus the current price" in prompt
+        assert "analyst price target above inform whether the setup looks more or less attractive" in prompt
+
+    def test_asks_not_to_restate_price_target_figure(self):
+        prompt = build_deepdive_prompt(_result(), self._snapshot())
+        assert "do NOT restate its dollar figure or upside/downside percentage" in prompt
+
+    def test_asks_to_flag_pe_quality_without_restating_core_pe(self):
+        prompt = build_deepdive_prompt(_result(), self._snapshot())
+        assert "If a PE Quality caveat is shown above" in prompt
+        assert "do NOT restate the specific core P/E number or percentage" in prompt
 
     def test_trade_plan_is_entry_zone_only(self):
         prompt = build_deepdive_prompt(_result(), self._snapshot())
@@ -581,7 +611,8 @@ class TestBuildCheapPortfolioPrompt:
 
     def test_asks_for_synthesis_not_per_ticker_recap(self):
         prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA")])
-        assert "not a per-ticker recap, a synthesis" in prompt
+        assert "NOT a per-ticker recap" in prompt
+        assert "portfolio-level synthesis" in prompt
 
     def test_asks_to_flag_cheap_with_warning_signs(self):
         prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA")])

@@ -5,6 +5,7 @@ import os
 
 from app.commands.registry import command
 from app.config import load_config, load_watchlist, load_favourites
+from app.fundamentals import format_target
 from app.indicators import analyze_tickers, IndicatorResult
 from app.llm import build_cheap_stock_prompt, build_cheap_portfolio_prompt, openrouter_chat
 from app.telegram import send, now_sgt
@@ -100,7 +101,13 @@ def build_valuation_ranking(
     table_rows = [f"{r.valuation.score:3.0f}  {html.escape(r.ticker):<6} {r.valuation.score_label}" for r in scored]
     blocks.append("<code>" + "\n".join(table_rows) + "</code>")
 
-    detail_lines = [f"<b>{html.escape(r.ticker)}</b>: {html.escape(_valuation_detail(r.valuation))}" for r in scored]
+    detail_lines = []
+    for r in scored:
+        line = f"<b>{html.escape(r.ticker)}</b>: {html.escape(_valuation_detail(r.valuation))}"
+        target = format_target(r.fundamentals, r.price)
+        if target != "n/a":
+            line += f"\n<i>Analyst target: {html.escape(target)}</i>"
+        detail_lines.append(line)
     blocks.append("\n\n".join(detail_lines))
 
     if unscored:

@@ -109,7 +109,8 @@
       "ps": 0.25
     },
     "peg_score_midpoint": 1.0,
-    "peg_score_steepness": 2.2
+    "peg_score_steepness": 2.2,
+    "pe_quality_distortion_threshold": 0.15
   },
   "data": {
     "history_period": "400d",
@@ -134,7 +135,9 @@
       30,
       60
     ],
-    "priority_min_signals": 2
+    "priority_min_signals": 2,
+    "action_alert_min_growth": 0.0,
+    "action_alert_analyst_labels": ["buy", "strong_buy"]
   },
   "display": {
     "timezone": "Asia/Singapore",
@@ -189,8 +192,8 @@
       "text": "Gates SELL alerts only. The current bar's volume must be at or above its 20-day average \u2014 overbought plus heavy volume means real distribution. Backtested: volume-confirmed sells averaged -2.7% over 20 days vs -1.6% unfiltered. Each rule only gates its own side because backtesting showed it hurt the other."
     },
     {
-      "name": "Priority Alert",
-      "text": "Fires when at least 2 of the 3 mean-reversion indicators agree (trigger score >= +2 or <= -2) AND the side's confirmation passes: bounce structure for buys, above-average volume for sells. One alert per stock per direction per day. Edge shows over 10-20 trading days \u2014 treat as multi-week swing entries."
+      "name": "Action Alert",
+      "text": "The ONLY automatic push alert (`app.scheduler.run_action_alert_check`, job id `action_alert_check`, checked every `priority_interval_minutes` \u2014 configurable via /priority, default 30) \u2014 replaced the earlier separate technical-only Priority Alert and valuation-only Cheap Alert after they proved spammy on their own. Fires ONLY when a watchlist ticker clears EVERY one of 5 bars at once, so it's rare by design, meant to read as 'this is a definite buy right now', not a running reminder: (1) valuation score (see 'Valuation Score') reads 'cheap' or 'very cheap'; (2) technically oversold \u2014 mean-reversion trigger score >= `scheduler.priority_min_signals` (default 2 of 3) on the BUY side specifically, never sell; (3) AND that side's confirmation gate passes (bounce structure \u2014 a higher close and higher low vs the prior bar \u2014 same gate /signals already uses, so this is never a falling knife); (4) positive growth trajectory \u2014 both revenue and earnings growth above `scheduler.action_alert_min_growth` (default 0.0, i.e. simply positive); (5) analyst consensus in `scheduler.action_alert_analyst_labels` (default `[\"buy\", \"strong_buy\"]`). Only once ALL FIVE deterministic-ish bars above pass does it spend a live AI call (`app.llm.build_prompt`, detailed mode) asking the model for its own independent verdict \u2014 if the AI's reply doesn't start with 'BUY', the alert is VETOED and nothing sends, even though every other bar passed. This keeps the (slower, costlier) AI check as a final confirmation gate rather than the primary filter, so cost stays bounded to the rare tickers that already cleared everything else. If OPENROUTER_API_KEY isn't set, the AI leg is skipped (treated as passed) rather than blocking the alert, since the other 4 legs are already strict; if the AI call itself fails or returns empty (network hiccup), the ticker is left UNRESOLVED and retried on the next 30-min check rather than either silently vetoing or falsely confirming a real high-conviction setup. Edge-triggered like the alerts it replaced: once a ticker clears everything (and isn't AI-vetoed) it won't re-alert on subsequent checks for the same qualifying streak \u2014 it must first drop out of qualifying (any one of the 5 bars fails) and later requalify before firing again. Labeled 'ACTION ALERT:' in the message, includes the AI's own reasoning underneath the usual technical/valuation/target block. State (`_action_resolved`) is in-memory only and resets on every redeploy/restart, same tradeoff as the rest of the app's in-memory alert dedup \u2014 after a restart, a currently-qualifying ticker is treated as freshly qualifying and gets a fresh AI check."
     },
     {
       "name": "Morning Report",
@@ -223,6 +226,14 @@
     {
       "name": "P/E",
       "text": "Trailing / forward price-to-earnings, shown as context in every report (not scored). 'n/a' means Yahoo doesn't publish a PE for that instrument (e.g. ETFs like IBIT). 'n/m' (not meaningful) means the trailing or forward EPS is zero or negative \u2014 the ratio would be a meaningless negative or undefined number, most common on early-stage/unprofitable names."
+    },
+    {
+      "name": "Analyst Target",
+      "text": "Shown as a deterministic 'Target' row alongside the technical/valuation data in every signals/signalsplus/deepdive block, and as an 'Analyst target' line under each ticker's valuation numbers in /cheap \u2014 the analyst mean price target and its upside/downside versus the current price (`app.fundamentals.format_target`), plus analyst count and consensus recommendation when available. 'n/a' when Yahoo has no analyst coverage for that instrument (e.g. ETFs). This number is deliberately computed once and shown as plain data rather than left for the AI to restate in its own words \u2014 the AI summaries for /signalsplus, /cheap, and /deepdive are still told to weigh this figure (and the overall technical rating) when forming their verdict, but are explicitly instructed never to quote the target's dollar figure or percentage back in their prose, since that would just be a redundant, possibly-slightly-reworded repeat of the number already shown above it."
+    },
+    {
+      "name": "PE Quality",
+      "text": "Shown as a 'PE Quality' row (only when it matters \u2014 empty/hidden otherwise) right under P/E in every signals/signalsplus/deepdive block: a flag for when a stock's reported trailing P/E doesn't reflect its recurring earnings power because GAAP net income over the last 4 reported quarters was meaningfully boosted or hurt by a one-off, non-operating item \u2014 the textbook example is a large investment mark-to-market gain (ASU 2016-01 requires unrealized gains/losses on equity stakes to hit the income statement, e.g. GOOGL's stakes in SpaceX/Anthropic/etc.), but a big legal settlement, asset write-off, or divestiture gain/loss shows up the same way. Computed from yfinance's quarterly income statement (`app.valuation._pe_quality`): sums the last 4 quarters' 'Net Income' (GAAP) and 'Normalized Income' (Yahoo's own ex-unusual-items figure) and divides each by the latest quarter's diluted share count to get a GAAP-TTM P/E and a core (normalized) P/E \u2014 both computed the SAME self-consistent way, deliberately NOT mixed with yfinance's separately-sourced headline trailingPE/trailingEps, which uses its own black-box TTM window and can disagree by a wide margin (confirmed live: GOOGL's headline trailingEps of 19.94 didn't match a plain sum of its last 4 quarters' Diluted EPS of ~13.1). Flags 'inflated' when GAAP income was boosted by a gain beyond `valuation.pe_quality_distortion_threshold` (default 15%) of TTM net income \u2014 the reported P/E looks CHEAPER than recurring earnings power supports (confirmed live: GOOGL read ~26% inflated, core P/E ~33 vs GAAP-TTM P/E ~24); 'suppressed' when a charge pushed GAAP income down \u2014 the reported P/E looks RICHER than it should (confirmed live: PFE read ~106% suppressed by a litigation-style charge, core P/E ~9 vs GAAP-TTM P/E ~19). Silently omitted (shows nothing) when distortion is under threshold or yfinance doesn't have enough quarterly 'Normalized Income' data to judge (e.g. ETFs, some smaller/foreign filers) \u2014 never a false 'normal' claim, just no opinion. The AI summaries for /signalsplus and /deepdive are fed this same fact and told to temper conviction accordingly and (for /deepdive) name the type of item if the data indicates which, but are barred from restating the specific core P/E number or percentage since it's already shown in this row."
     },
     {
       "name": "Valuation",

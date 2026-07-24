@@ -1,4 +1,4 @@
-from app.fundamentals import format_pe, get_pe, get_fundamentals, _cache
+from app.fundamentals import format_pe, format_target, get_pe, get_fundamentals, _cache
 import app.fundamentals as fundamentals
 
 
@@ -17,6 +17,30 @@ class TestFormatPe:
 
     def test_normal_pair(self):
         assert format_pe(31.62, 16.08) == "31.6 / 16.1"
+
+
+class TestFormatTarget:
+    def test_no_target_is_na(self):
+        assert format_target({"target_mean": None}, 171.30) == "n/a"
+
+    def test_empty_fundamentals_is_na(self):
+        assert format_target({}, 171.30) == "n/a"
+
+    def test_zero_price_is_na(self):
+        assert format_target({"target_mean": 303.0}, 0) == "n/a"
+
+    def test_upside_shown_with_analysts_and_recommendation(self):
+        text = format_target(
+            {"target_mean": 303.0, "analyst_count": 58, "recommendation": "strong_buy"}, 212.06,
+        )
+        assert text == "$303 (+43% vs price) · 58 analysts, strong buy"
+
+    def test_downside_shown_as_negative_percent(self):
+        text = format_target({"target_mean": 150.0}, 200.0)
+        assert text == "$150 (-25% vs price)"
+
+    def test_missing_analyst_count_and_recommendation_omitted(self):
+        assert format_target({"target_mean": 303.0}, 212.06) == "$303 (+43% vs price)"
 
 
 class TestGetPeCache:

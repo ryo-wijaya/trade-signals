@@ -3,8 +3,8 @@ import asyncio
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
 from app.telegram import (
-    _call, build_priority_alert, build_stock_messages, signal_line, split_message,
-    send, collect_output,
+    _call, build_priority_alert, build_action_alert, build_stock_messages, signal_line,
+    split_message, send, collect_output, _highlight_leading_verdict,
 )
 from app.valuation import ValuationResult, HistoricalBand
 
@@ -41,6 +41,35 @@ class TestPriorityAlert:
     def test_includes_trend_context(self):
         alert = build_priority_alert(_result([1, 1, 0]))
         assert "downtrend" in alert
+
+
+class TestActionAlert:
+    def test_header_shows_ticker(self):
+        r = _result([0, 0, 0])
+        r.valuation = ValuationResult(ticker="TEST", verdict="cheap", score=15.0, score_label="very cheap")
+        alert = build_action_alert(r)
+        assert "ACTION ALERT" in alert
+        assert "TEST" in alert
+
+    def test_includes_price_and_technical_block(self):
+        r = _result([0, 0, 0])
+        r.valuation = ValuationResult(ticker="TEST", verdict="cheap", score=15.0, score_label="very cheap")
+        alert = build_action_alert(r)
+        assert "$100.00" in alert
+        assert "Valuation" in alert  # from the shared _block() technical rows
+
+    def test_ai_reason_appended_and_verdict_bolded(self):
+        r = _result([0, 0, 0])
+        r.valuation = ValuationResult(ticker="TEST", verdict="cheap", score=15.0, score_label="very cheap")
+        alert = build_action_alert(r, ai_reason="BUY\n\nStrong setup across the board.")
+        assert "<b>BUY</b>" in alert
+        assert "Strong setup across the board." in alert
+
+    def test_no_ai_reason_omits_trailing_section(self):
+        r = _result([0, 0, 0])
+        r.valuation = ValuationResult(ticker="TEST", verdict="cheap", score=15.0, score_label="very cheap")
+        alert = build_action_alert(r, ai_reason="")
+        assert "Signal:" in alert.splitlines()[-1]
 
 
 class TestStockMessages:
@@ -81,6 +110,69 @@ class TestStockMessages:
         body = build_stock_messages([r], "now")[1]
         assert "Valuation" in body
         assert "insufficient data" in body
+
+    def test_target_row_shown_as_deterministic_data_not_ai_prose(self):
+        r = _result([1, 1, 0])
+        r.fundamentals = {"target_mean": 303.0, "analyst_count": 58, "recommendation": "strong_buy"}
+        body = build_stock_messages([r], "now")[1]
+        assert "Target" in body
+        assert "$303 (+203% vs price)" in body  # r.price is 100.0 in this fixture
+
+    def test_target_row_shows_na_when_no_analyst_target(self):
+        r = _result([1, 1, 0])  # r.fundamentals defaults to {}
+        body = build_stock_messages([r], "now")[1]
+        assert "Target" in body
+        assert "n/a" in body
+
+    def test_pe_quality_row_shown_when_earnings_distorted(self):
+        r = _result([1, 1, 0])
+        r.valuation = ValuationResult(
+            ticker="GOOGL", verdict="cheap", earnings_quality_label="inflated",
+            pe_distortion_pct=0.26, core_pe=33.0, gaap_ttm_pe=24.4,
+        )
+        body = build_stock_messages([r], "now")[1]
+        assert "PE Quality" in body
+        assert "core P/E ~33.0 vs GAAP-TTM P/E ~24.4" in body
+
+    def test_pe_quality_row_hidden_when_normal_or_unknown(self):
+        r = _result([1, 1, 0])  # r.valuation defaults to None -> "unknown"
+        body = build_stock_messages([r], "now")[1]
+        assert "PE Quality" not in body
+
+    def test_ai_summary_leading_verdict_is_bolded(self):
+        r = _result([1, 1, 0])
+        summaries = {"TEST": "BUY\n\nStrong technical setup with confirmed bounce."}
+        body = build_stock_messages([r], "now", summaries=summaries)[1]
+        assert "<b>BUY</b>" in body
+
+    def test_ai_summary_without_leading_verdict_is_left_alone(self):
+        r = _result([1, 1, 0])
+        summaries = {"TEST": "Just a plain sentence with no verdict prefix."}
+        body = build_stock_messages([r], "now", summaries=summaries)[1]
+        assert "<b>" not in body.split("Signal:")[-1]  # no bolding introduced in the summary part
+
+
+class TestHighlightLeadingVerdict:
+    def test_bolds_buy_at_start(self):
+        assert _highlight_leading_verdict("BUY\n\nreason here") == "<b>BUY</b>\n\nreason here"
+
+    def test_bolds_verdict_with_dash_reason_on_same_line(self):
+        assert _highlight_leading_verdict("SELL — reason here") == "<b>SELL</b> — reason here"
+
+    def test_bolds_hold(self):
+        assert _highlight_leading_verdict("HOLD\n\nreason") == "<b>HOLD</b>\n\nreason"
+
+    def test_no_match_returns_text_unchanged(self):
+        text = "Not a verdict-first reply at all."
+        assert _highlight_leading_verdict(text) == text
+
+    def test_does_not_match_verdict_word_mid_text(self):
+        text = "Technicals are neutral but a BUY case could emerge."
+        assert _highlight_leading_verdict(text) == text
+
+    def test_does_not_partially_match_longer_word(self):
+        # "BUYER" starts with "BUY" but \b after "BUY" must not match mid-word
+        assert _highlight_leading_verdict("BUYER BEWARE") == "BUYER BEWARE"
 
 
 class TestSignalLine:

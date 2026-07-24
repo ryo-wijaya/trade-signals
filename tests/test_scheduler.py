@@ -1,17 +1,32 @@
+import asyncio
+
 import app.scheduler as scheduler
 import app.config as config_mod
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
 from app.scheduler import (
-    dedupe_alerts, _alerted, _morning_trigger, run_morning_report,
+    _morning_trigger, run_morning_report,
     _leaps_alert_trigger, _leaps_alerted, _cheap_candidates, run_leaps_alert_check,
+    meets_action_criteria, action_candidates, _action_resolved, run_action_alert_check,
 )
+from app.valuation import ValuationResult
 
 
-def _result(ticker: str, score: int) -> IndicatorResult:
+def _result(ticker: str, score: int, valuation=None, fundamentals=None, rules_passed=True) -> IndicatorResult:
     signals = [(f"R{i}", f"R{i}", SignalResult(signal=1 if score > 0 else -1, display="x"))
                for i in range(abs(score))]
-    return IndicatorResult(ticker=ticker, price=100.0, prev_close=99.0, signals=signals)
+    return IndicatorResult(ticker=ticker, price=100.0, prev_close=99.0, signals=signals,
+                            valuation=valuation, fundamentals=fundamentals or {}, rules_passed=rules_passed)
+
+
+def _valuation(score_label: str, score: float = 50.0) -> ValuationResult:
+    return ValuationResult(ticker="X", verdict="cheap", score=score, score_label=score_label)
+
+
+def _good_fundamentals(**overrides) -> dict:
+    defaults = {"revenue_growth": 0.10, "earnings_growth": 0.10, "recommendation": "buy"}
+    defaults.update(overrides)
+    return defaults
 
 
 async def _fake_get_summary(r, detailed=False) -> str:
@@ -42,33 +57,218 @@ def _leaps_scan(ticker="NVDA", iv_hv=0.5, error=None, has_sample=True):
     return LeapsScan(ticker=ticker, spot=205.0, hv=0.35, sample=sample, error=error)
 
 
-class TestDedupeAlerts:
+class TestMeetsActionCriteria:
+    def test_all_criteria_pass(self):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        assert meets_action_criteria(r, min_signals=2) is True
+
+    def test_valuation_not_cheap_fails(self):
+        r = _result("NVDA", 2, _valuation("fair"), _good_fundamentals())
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_no_valuation_fails(self):
+        r = _result("NVDA", 2, valuation=None, fundamentals=_good_fundamentals())
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_score_below_threshold_fails(self):
+        r = _result("NVDA", 1, _valuation("cheap"), _good_fundamentals())
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_unconfirmed_bounce_fails(self):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals(), rules_passed=False)
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_sell_side_score_never_qualifies(self):
+        r = _result("NVDA", -2, _valuation("cheap"), _good_fundamentals())
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_missing_growth_data_fails(self):
+        r = _result("NVDA", 2, _valuation("cheap"), {"recommendation": "buy"})
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_negative_growth_fails(self):
+        bad = _good_fundamentals(revenue_growth=-0.05)
+        r = _result("NVDA", 2, _valuation("cheap"), bad)
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_weak_analyst_consensus_fails(self):
+        bad = _good_fundamentals(recommendation="hold")
+        r = _result("NVDA", 2, _valuation("cheap"), bad)
+        assert meets_action_criteria(r, min_signals=2) is False
+
+    def test_custom_min_growth_threshold_applied(self):
+        modest = _good_fundamentals(revenue_growth=0.02, earnings_growth=0.02)
+        r = _result("NVDA", 2, _valuation("cheap"), modest)
+        assert meets_action_criteria(r, min_signals=2, min_growth=0.05) is False
+        assert meets_action_criteria(r, min_signals=2, min_growth=0.01) is True
+
+    def test_custom_analyst_labels_applied(self):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals(recommendation="strong_buy"))
+        assert meets_action_criteria(r, min_signals=2, analyst_labels={"buy"}) is False
+        assert meets_action_criteria(r, min_signals=2, analyst_labels={"strong_buy"}) is True
+
+
+class TestActionCandidates:
     def setup_method(self):
-        _alerted.clear()
+        _action_resolved.clear()
 
-    def test_first_alert_passes_repeat_suppressed(self):
-        a = _result("NVDA", 2)
-        assert dedupe_alerts([a], "2026-07-20") == [a]
-        assert dedupe_alerts([a], "2026-07-20") == []
+    def test_first_qualifying_sighting_is_candidate(self):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        assert action_candidates([r], min_signals=2) == [r]
 
-    def test_new_day_alerts_again(self):
-        a = _result("NVDA", 2)
-        dedupe_alerts([a], "2026-07-20")
-        assert dedupe_alerts([a], "2026-07-21") == [a]
+    def test_already_resolved_ticker_excluded(self):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        _action_resolved["NVDA"] = True
+        assert action_candidates([r], min_signals=2) == []
 
-    def test_opposite_side_not_suppressed(self):
-        dedupe_alerts([_result("NVDA", 2)], "2026-07-20")
-        sell = _result("NVDA", -2)
-        assert dedupe_alerts([sell], "2026-07-20") == [sell]
+    def test_dropping_out_of_criteria_clears_resolved_flag(self):
+        _action_resolved["NVDA"] = True
+        fair = _result("NVDA", 2, _valuation("fair"), _good_fundamentals())
+        action_candidates([fair], min_signals=2)
+        assert "NVDA" not in _action_resolved
 
-    def test_different_tickers_independent(self):
-        dedupe_alerts([_result("NVDA", 2)], "2026-07-20")
-        other = _result("META", 2)
-        assert dedupe_alerts([other], "2026-07-20") == [other]
+    def test_re_qualifying_after_drop_out_is_a_fresh_candidate(self):
+        _action_resolved["NVDA"] = True
+        fair = _result("NVDA", 2, _valuation("fair"), _good_fundamentals())
+        action_candidates([fair], min_signals=2)  # drops out, clears the resolved flag
+        cheap = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        assert action_candidates([cheap], min_signals=2) == [cheap]
+
+    def test_non_qualifying_never_a_candidate(self):
+        r = _result("NVDA", 0, _valuation("fair"), _good_fundamentals())
+        assert action_candidates([r], min_signals=2) == []
+
+
+class TestConfirmAiOutlook:
+    def test_no_api_key_degrades_to_passed(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        assert asyncio.run(scheduler._confirm_ai_outlook(r)) == (True, True, "")
+
+    def test_ai_says_buy_passes(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setattr("app.config.load_config", lambda: {"llm": {"detailed_max_tokens": 320}})
+
+        async def _fake_chat(prompt, max_tokens):
+            return "BUY\n\nGreat setup across the board."
+        monkeypatch.setattr("app.llm.openrouter_chat", _fake_chat)
+
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        resolved, passed, reason = asyncio.run(scheduler._confirm_ai_outlook(r))
+        assert resolved is True
+        assert passed is True
+        assert "Great setup" in reason
+
+    def test_ai_says_hold_vetoes(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setattr("app.config.load_config", lambda: {"llm": {"detailed_max_tokens": 320}})
+
+        async def _fake_chat(prompt, max_tokens):
+            return "HOLD\n\nMixed signals."
+        monkeypatch.setattr("app.llm.openrouter_chat", _fake_chat)
+
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        resolved, passed, reason = asyncio.run(scheduler._confirm_ai_outlook(r))
+        assert resolved is True
+        assert passed is False
+
+    def test_empty_reply_is_unresolved_not_vetoed(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setattr("app.config.load_config", lambda: {"llm": {"detailed_max_tokens": 320}})
+
+        async def _fake_chat(prompt, max_tokens):
+            return ""
+        monkeypatch.setattr("app.llm.openrouter_chat", _fake_chat)
+
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        resolved, _, _ = asyncio.run(scheduler._confirm_ai_outlook(r))
+        assert resolved is False
+
+    def test_exception_is_unresolved_not_vetoed(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setattr("app.config.load_config", lambda: {"llm": {"detailed_max_tokens": 320}})
+
+        async def _fake_chat(prompt, max_tokens):
+            raise RuntimeError("network down")
+        monkeypatch.setattr("app.llm.openrouter_chat", _fake_chat)
+
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        resolved, _, _ = asyncio.run(scheduler._confirm_ai_outlook(r))
+        assert resolved is False
 
 
 def _cron_field(trigger, name: str) -> str:
     return str(next(f for f in trigger.fields if f.name == name))
+
+
+class TestRunActionAlertCheck:
+    def setup_method(self):
+        _action_resolved.clear()
+
+    def _wire(self, monkeypatch, results, ai_outcome=(True, True, "BUY\n\nAI agrees.")):
+        monkeypatch.setattr(scheduler, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(scheduler, "collect_results", lambda: (results, []))
+
+        async def _fake_confirm(r):
+            return ai_outcome
+        monkeypatch.setattr(scheduler, "_confirm_ai_outlook", _fake_confirm)
+
+        sent = []
+
+        async def _fake_send(msg, chat_id=None):
+            sent.append(msg)
+        monkeypatch.setattr(scheduler, "send", _fake_send)
+        return sent
+
+    def test_skips_on_non_trading_day(self, monkeypatch):
+        monkeypatch.setattr(scheduler, "is_trading_day", lambda d: False)
+
+        def _boom():
+            raise AssertionError("should not collect results on a non-trading day")
+        monkeypatch.setattr(scheduler, "collect_results", _boom)
+
+        run_action_alert_check()
+
+    def test_no_candidates_sends_nothing(self, monkeypatch):
+        r = _result("NVDA", 0, _valuation("fair"), _good_fundamentals())
+        sent = self._wire(monkeypatch, [r])
+        run_action_alert_check()
+        assert sent == []
+
+    def test_full_candidate_confirmed_by_ai_sends_action_alert(self, monkeypatch):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        sent = self._wire(monkeypatch, [r], ai_outcome=(True, True, "BUY\n\nAll signals align."))
+        run_action_alert_check()
+        assert any("ACTION ALERT" in m and "NVDA" in m for m in sent)
+
+    def test_ai_veto_sends_nothing(self, monkeypatch):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        sent = self._wire(monkeypatch, [r], ai_outcome=(True, False, "HOLD\n\nMixed."))
+        run_action_alert_check()
+        assert sent == []
+
+    def test_unresolved_ai_check_does_not_send_and_leaves_ticker_unresolved(self, monkeypatch):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        sent = self._wire(monkeypatch, [r], ai_outcome=(False, False, ""))
+        run_action_alert_check()
+        assert sent == []
+        assert "NVDA" not in _action_resolved
+
+    def test_does_not_refire_same_qualifying_streak(self, monkeypatch):
+        r = _result("NVDA", 2, _valuation("cheap"), _good_fundamentals())
+        sent = self._wire(monkeypatch, [r], ai_outcome=(True, True, "BUY\n\nGood."))
+        run_action_alert_check()
+        run_action_alert_check()
+        assert len([m for m in sent if "ACTION ALERT" in m]) == 1
+
+    def test_missing_any_single_criterion_blocks_alert_entirely(self, monkeypatch):
+        # cheap + oversold + confirmed + growth all pass, but consensus is
+        # only "hold" -- the whole point is that ONE weak leg blocks it.
+        bad_fundamentals = _good_fundamentals(recommendation="hold")
+        r = _result("NVDA", 2, _valuation("cheap"), bad_fundamentals)
+        sent = self._wire(monkeypatch, [r])
+        run_action_alert_check()
+        assert sent == []
 
 
 class TestMorningTrigger:

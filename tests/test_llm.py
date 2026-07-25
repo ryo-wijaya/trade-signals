@@ -7,8 +7,10 @@ from app.llm import (
     build_prompt, build_news_prompt, build_leaps_prompt, build_wheel_prompt,
     build_deepdive_prompt, trim_incomplete, clean_response, _valuation_line,
     _fundamentals_line, build_cheap_stock_prompt, build_cheap_portfolio_prompt,
+    build_opc_prompt,
 )
 from app.commands.portfolio_analysis import _build_prompt as build_portfolio_prompt
+from app.options.profit_calc import OpcResult, OpcCell
 from app.valuation import ValuationResult, HistoricalBand
 
 
@@ -621,6 +623,68 @@ class TestBuildCheapPortfolioPrompt:
     def test_asks_for_most_attractive_and_most_worth_avoiding(self):
         prompt = build_cheap_portfolio_prompt([self._scored_result("NVDA")])
         assert "the single most attractive name and the single one most worth trimming or avoiding" in prompt
+
+
+def _opc_result(**overrides) -> OpcResult:
+    defaults = dict(
+        ticker="NVDA", spot=200.0, strike=200.0, option_type="call",
+        expiration="2026-09-18", dte=60, iv=0.45, hv=0.39, iv_hv=1.15, iv_hv_label="fair",
+        premium=15.0, contracts=1, breakeven=215.0, max_loss_per_contract=1500.0,
+        checkpoints=[0, 30, 60], price_pcts=[-0.1, 0.0, 0.1],
+        grid={
+            (60, -0.1): OpcCell(value=0.0, pl_per_contract=-1500.0, pl_pct=-1.0),
+            (60, 0.0): OpcCell(value=0.0, pl_per_contract=-1500.0, pl_pct=-1.0),
+            (60, 0.1): OpcCell(value=20.0, pl_per_contract=500.0, pl_pct=0.3333),
+        },
+    )
+    defaults.update(overrides)
+    return OpcResult(**defaults)
+
+
+class TestBuildOpcPrompt:
+    def test_includes_contract_details_and_breakeven(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert "NVDA at $200.00" in prompt
+        assert "$200 call expiring 2026-09-18 (60 days out)" in prompt
+        assert "Premium paid: $15.00" in prompt
+        assert "Breakeven at expiration: $215.00" in prompt
+
+    def test_includes_iv_hv_read(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert "Implied volatility: 45%" in prompt
+        assert "90-day realized volatility: 39%" in prompt
+        assert "IV/HV: 1.15 (fair)" in prompt
+        assert "cheap under 0.9, rich over 1.3" in prompt
+
+    def test_unknown_iv_hv_omitted_gracefully(self):
+        prompt = build_opc_prompt(_opc_result(iv_hv=None, hv=None, iv_hv_label="unknown"))
+        assert "IV/HV:" not in prompt  # the data line itself, not the fixed ask text
+        assert "90-day realized volatility" not in prompt
+        assert "Implied volatility: 45%" in prompt
+
+    def test_includes_expiration_pl_scenarios(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert "P/L at expiration by hypothetical price" in prompt
+        assert "$180 (-10%): -100%" in prompt
+        assert "$220 (+10%): +33%" in prompt
+
+    def test_asks_for_cheap_fair_rich_read(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert "cheap, fair, or rich right now" in prompt
+
+    def test_asks_to_search_for_news_and_catalysts(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert "Search for real, current news and events" in prompt
+
+    def test_asks_for_probability_weighted_outcome(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert "probability-weighted judgment" in prompt
+
+    def test_asks_for_trade_hold_no_trade_verdict(self):
+        prompt = build_opc_prompt(_opc_result())
+        assert '"TRADE — one-sentence summary"' in prompt
+        assert '"HOLD — one-sentence summary"' in prompt
+        assert '"NO TRADE — one-sentence summary"' in prompt
 
 
 class TestPortfolioPrompt:

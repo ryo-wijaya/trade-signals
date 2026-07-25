@@ -81,6 +81,12 @@ _DEFAULTS = {
         "leaps_alert": {
             "iv_hv_threshold": 0.9,
         },
+        "opc": {
+            "price_range_pcts": [-0.15, -0.075, 0.0, 0.075, 0.15],
+            "num_checkpoints": 4,
+            "risk_free_rate": 0.045,
+            "hv_window_days": 90,
+        },
     },
     "portfolio": {
         "account_size": 10000,
@@ -143,6 +149,7 @@ _DEFAULTS = {
         "deepdive_max_tokens": 1500,
         "cheap_stock_max_tokens": 400,
         "cheap_portfolio_max_tokens": 600,
+        "opc_max_tokens": 400,
     },
 }
 

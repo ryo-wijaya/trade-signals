@@ -5,7 +5,8 @@ import pytest
 
 import app.options.chain as chain_mod
 from app.options.chain import (
-    black_scholes_delta, fetch_chain, pick_expiration, liquid_mask, put_call_ratio, days_to_months,
+    black_scholes_delta, black_scholes_price, fetch_chain, pick_expiration, liquid_mask,
+    put_call_ratio, days_to_months,
 )
 
 
@@ -45,6 +46,38 @@ class TestBlackScholesDelta:
         c = black_scholes_delta(100, 105, 200, 0.4, is_call=True)
         p = black_scholes_delta(100, 105, 200, 0.4, is_call=False)
         assert abs((c - p) - 1.0) < 1e-9
+
+
+class TestBlackScholesPrice:
+    def test_zero_dte_itm_call_is_intrinsic_value(self):
+        assert black_scholes_price(120, 100, 0, 0.3, is_call=True) == pytest.approx(20.0)
+
+    def test_zero_dte_otm_call_is_zero(self):
+        assert black_scholes_price(80, 100, 0, 0.3, is_call=True) == 0.0
+
+    def test_zero_dte_itm_put_is_intrinsic_value(self):
+        assert black_scholes_price(80, 100, 0, 0.3, is_call=False) == pytest.approx(20.0)
+
+    def test_none_iv_falls_back_to_intrinsic_value(self):
+        assert black_scholes_price(120, 100, 30, None, is_call=True) == pytest.approx(20.0)
+
+    def test_zero_iv_falls_back_to_intrinsic_value(self):
+        assert black_scholes_price(120, 100, 30, 0, is_call=True) == pytest.approx(20.0)
+
+    def test_atm_call_has_positive_time_value(self):
+        # ATM has zero intrinsic value -- any positive price is pure time value.
+        assert black_scholes_price(100, 100, 30, 0.3, is_call=True) > 0
+
+    def test_deep_itm_call_approaches_intrinsic_with_little_time_left(self):
+        price = black_scholes_price(300, 100, 5, 0.3, is_call=True)
+        assert price == pytest.approx(200.0, abs=1.0)
+
+    def test_put_call_parity_holds(self):
+        import math
+        spot, strike, days, iv, r = 100.0, 105.0, 90, 0.35, 0.045
+        c = black_scholes_price(spot, strike, days, iv, is_call=True, r=r)
+        p = black_scholes_price(spot, strike, days, iv, is_call=False, r=r)
+        assert (c - p) == pytest.approx(spot - strike * math.exp(-r * (days / 365.0)), abs=1e-6)
 
 
 class TestFetchChain:

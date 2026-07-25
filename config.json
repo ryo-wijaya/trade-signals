@@ -85,6 +85,12 @@
     },
     "leaps_alert": {
       "iv_hv_threshold": 0.9
+    },
+    "opc": {
+      "price_range_pcts": [-0.15, -0.075, 0.0, 0.075, 0.15],
+      "num_checkpoints": 4,
+      "risk_free_rate": 0.045,
+      "hv_window_days": 90
     }
   },
   "portfolio": {
@@ -156,7 +162,8 @@
     "leaps_max_tokens": 700,
     "deepdive_max_tokens": 1500,
     "cheap_stock_max_tokens": 400,
-    "cheap_portfolio_max_tokens": 600
+    "cheap_portfolio_max_tokens": 600,
+    "opc_max_tokens": 400
   },
   "explanations": [
     {
@@ -254,6 +261,10 @@
     {
       "name": "Wheel Scanner",
       "text": "/options wheel scans cash-secured put strikes 1-3 weeks out, averaging ~2 weeks (delta 0.15-0.30, liquidity-filtered) and ranks by annualized yield (premium / capital required, annualized) \u2014 here HIGH IV/HV is what you want, since you're selling (the opposite of LEAPS). Candidates whose expiration falls on or after the next earnings date are flagged (not excluded) with a warning, since holding a short put through an earnings surprise carries real gap risk despite the richer premium. Shows the cash-secured-put entry leg only \u2014 the covered-call follow-through after assignment isn't scanned, since the app doesn't track your share ownership or cost basis. The AI verdict \u2014 TRADE (naming one specific strike from the candidates shown), HOLD, or NO TRADE \u2014 is restricted to those candidates only, not a free pick, so candidate selection is deterministic given the same market snapshot; the market itself moving between calls, or the AI's live web search returning different context, are the two real sources of run-to-run variation."
+    },
+    {
+      "name": "Options Profit Calculator",
+      "text": "/opc TICKER STRIKE C|P EXPIRATION [PREMIUM] (`app/commands/opc.py`, `app.options.profit_calc.compute_opc`, `llm.build_opc_prompt`) \u2014 analyzes a specific option contract: is its premium cheap, fair, or rich right now, and what's the likely profit/loss outcome by expiration given real news and events, e.g. `/opc NVDA 200 CALL 2026-09-18`. Requires `OPENROUTER_API_KEY` (blocking, like /deepdive) since the AI analysis is the whole point of the command \u2014 an earlier version showed a big deterministic price/date P/L grid instead and no AI, which read as noninformative noise rather than an actual answer to 'is this a good trade'; that grid math still runs internally (Black-Scholes, same erf-based normal-CDF as the LEAPS/wheel scanners) but only feeds the AI prompt now, not the displayed message. Fetches the REAL chain: nearest listed expiration/strike to what you typed (exact match not required), that contract's live mid price and IV, plus 90-day realized volatility (`options.opc.hv_window_days`, default 90) to compute an IV/HV cheap/fair/rich read exactly like the LEAPS scanner's \u2014 the optional PREMIUM argument overrides the live mid with your own cost basis if you already hold the contract at a different price. Shows a slim deterministic header (spot, strike, premium, IV/HV read, breakeven, max loss = premium \u00d7 100 \u00d7 contracts), then one AI-written analysis (`llm.opc_max_tokens`, default 400) that: (1) judges whether the premium is cheap/fair/rich weighing the IV/HV read (without restating the exact ratio number, which is already shown above it); (2) weighs what that IV implies for the P/L scenarios computed via Black-Scholes at expiration (fed to the prompt as concrete anchor numbers, not re-derived by the model); (3) searches for real, current news/catalysts (earnings date, sector trends, macro) specific to this ticker and explains how they could move price before this expiration; (4) gives a probability-weighted (not guaranteed) likely outcome; (5) closes with exactly one bolded `TRADE`/`HOLD`/`NO TRADE` verdict (same last-matching-line extraction, `app.commands.options._highlight_closing_verdict`, as the LEAPS/wheel scanners). Known simplification, inherited from the underlying Black-Scholes P/L math the AI reasons over: IV is held constant at today's fetched value \u2014 a real IV move (e.g. a post-earnings crush) isn't modeled, which is exactly why the AI is told to reason about news/catalysts on top of the raw IV read rather than take the number at face value."
     }
   ]
 }

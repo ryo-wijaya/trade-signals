@@ -73,8 +73,15 @@ def _render_leaps(scan) -> str:
     lines.append("BE = breakeven price (strike + premium paid)")
     for (expiration, dte), group in itertools.groupby(scan.sample, key=lambda c: (c.expiration, c.dte)):
         lines.append(f"<b>{expiration}</b>  ({days_to_months(dte)}mo)")
-        rows = [f"${c.strike:g}C  ${c.mid:.2f}  Δ{c.delta:.2f}  {c.iv_hv:.2f} {c.iv_hv_label}  BE ${c.breakeven:.2f}"
-                for c in group]
+        rows = []
+        for c in group:
+            # iv_hv is None when realized volatility couldn't be computed
+            # (e.g. a recently-listed ticker with too little price history
+            # for the 90-day window) -- confirmed live on SKHY (11 days of
+            # history vs a 90-day requirement), which crashed this line
+            # trying to format None with :.2f before this fix.
+            iv_hv_str = f"{c.iv_hv:.2f} {c.iv_hv_label}" if c.iv_hv is not None else c.iv_hv_label
+            rows.append(f"${c.strike:g}C  ${c.mid:.2f}  Δ{c.delta:.2f}  {iv_hv_str}  BE ${c.breakeven:.2f}")
         lines.append("<code>" + "\n".join(rows) + "</code>")
 
     lines.extend(_render_context(scan))

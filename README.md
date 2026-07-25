@@ -170,6 +170,8 @@ fly ssh console   # shell into the running container
 | `/options leaps NVDA` | Same, for specific tickers |
 | `/options wheel` | Cash-secured-put scan (1–3 weeks out, ~2wk avg) for favourites, ranked by annualized yield, with AI TRADE/HOLD/NO TRADE verdict |
 | `/options wheel PFE` | Same, for specific tickers |
+| `/opc NVDA 200 CALL 2026-09-18` | Options profit calculator: AI verdict on whether a specific contract is cheap/fair/rich and its likely P/L outcome, given IV/HV and real news/catalysts |
+| `/opc NVDA 200 CALL 2026-09-18 12.50` | Same, using your own cost-basis premium instead of the live mid |
 | `/earnings` | Next earnings report dates for watchlist tickers (SGT) — also sent every Saturday midnight SGT |
 | `/watchlist` | View current watchlist (★ marks favourites) |
 | `/add AAPL TSLA` | Add tickers |
@@ -416,6 +418,24 @@ At the **bottom** of the message, the ticker's technical/fundamental rating, tre
 `/options wheel [TICKER...]` (no ticker → favourites). Scans cash-secured-put strikes 1–3 weeks out (averaging ~2 weeks), filters to delta magnitude 0.15–0.30, and ranks **descending by annualized yield** (`premium / (strike×100) × 365/DTE`) — the point of the wheel is collecting rich premium, so here a high IV/HV is desirable, the opposite of LEAPS. Shows the CSP entry leg only — the covered-call follow-through after assignment isn't scanned, since the app doesn't track your share ownership or cost basis. Same `TRADE $<strike>P` / `HOLD` / `NO TRADE` verdict format as LEAPS.
 
 **Earnings handling**: any candidate whose expiration falls on or after the next earnings date (i.e. you'd be holding the short put through the event) is flagged `⚠earnings`, not excluded — the richer premium is often real, but so is the gap risk, and it's shown as a deliberate choice rather than silently filtered.
+
+### Options profit calculator (`/opc`)
+
+`/opc TICKER STRIKE C|P EXPIRATION [PREMIUM]` (`app/commands/opc.py`, `app/options/profit_calc.py`, `llm.build_opc_prompt`) — analyzes a specific option contract: is its premium cheap, fair, or rich right now, and what's the likely profit/loss outcome by expiration given real news and events, e.g. `/opc NVDA 200 CALL 2026-09-18`. **Requires `OPENROUTER_API_KEY`** (blocking, like `/deepdive`) since the AI analysis is the whole point of the command.
+
+An earlier version showed a big deterministic price/date P/L grid with no AI — it read as noninformative noise, not an actual answer to "is this a good trade." The grid math (Black-Scholes, same erf-based normal-CDF method as the LEAPS/wheel scanners' delta calculation) still runs internally, but now only feeds the AI prompt as anchor numbers rather than being displayed as a raw table.
+
+Fetches the **real chain**: the nearest **listed** expiration/strike to whatever you typed (exact match not required — `pick_expiration`-style nearest-match, same pattern as the LEAPS/wheel scanners), that contract's live mid price and IV, plus 90-day realized volatility (`options.opc.hv_window_days`, default 90) to compute an **IV/HV cheap/fair/rich read** exactly like the LEAPS scanner's. The optional trailing `PREMIUM` argument overrides the live mid with your own cost basis — useful if you already hold the contract at a different fill price than today's mid.
+
+Shows a slim deterministic header (spot, strike, premium, IV/HV read, breakeven, max loss = premium × 100 × contracts), then one AI-written analysis (`llm.opc_max_tokens`, default 400) that:
+
+1. Judges whether the premium is cheap/fair/rich, weighing the IV/HV read — without restating the exact ratio number, since it's already shown in the header above it.
+2. Weighs what that IV level implies for the profit/loss scenarios computed via Black-Scholes at expiration (fed to the prompt as concrete numbers, not re-derived by the model).
+3. Searches for real, current news and catalysts specific to this ticker — earnings date, sector trends, macro backdrop — and explains how they could move price before this expiration.
+4. Gives a probability-weighted (not guaranteed) judgment of the likely outcome.
+5. Closes with exactly one bolded `TRADE`/`HOLD`/`NO TRADE` verdict line (same last-matching-line extraction, `app.commands.options._highlight_closing_verdict`, as the LEAPS/wheel scanners).
+
+**Known simplification**, inherited from the Black-Scholes P/L math the AI reasons over: IV is held constant at today's fetched value — a real IV move (most commonly a post-earnings crush) isn't modeled. This is exactly why the AI is explicitly told to reason about news/catalysts on top of the raw IV read rather than take the number at face value.
 
 ## Deep dive
 

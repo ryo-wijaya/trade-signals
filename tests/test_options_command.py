@@ -102,6 +102,21 @@ class TestRenderLeaps:
         assert "no options chain available" in body
         assert "$220C" not in body
 
+    def test_unknown_iv_hv_does_not_crash_render(self):
+        # Confirmed live on SKHY: a recently-listed ticker (11 days of price
+        # history vs the 90-day realized-volatility window) leaves hv, and
+        # so every candidate's iv_hv, as None -- formatting that with :.2f
+        # used to raise TypeError and surface as "/options failed
+        # unexpectedly" instead of a usable (if incomplete) result.
+        from app.options.leaps import LeapsCandidate
+        candidate = LeapsCandidate(
+            expiration="2028-01-21", dte=545, strike=200.0, mid=64.0, iv=0.55, delta=0.69,
+            iv_hv=None, iv_hv_label="unknown", open_interest=50, spread_pct=0.05, breakeven=264.0,
+        )
+        scan = _leaps_scan(sample=[candidate], hv=None)
+        body = _render_leaps(scan)
+        assert "$200C  $64.00  Δ0.69  unknown  BE $264.00" in body
+
 
 class TestHighlightClosingVerdict:
     def test_bolds_the_closing_verdict_line(self):

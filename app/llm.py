@@ -501,6 +501,61 @@ def build_cheap_portfolio_prompt(results: list[IndicatorResult]) -> str:
     return "\n".join(blocks) + "\n\n" + _CHEAP_PORTFOLIO_ASK
 
 
+_OPC_ASK = (
+    "Reply in plain text, no markdown, no citation numbers, as up to 5 short SEPARATE sentences, "
+    "each on its own line (never stuff multiple clauses into one sentence with repeated 'and's/"
+    "semicolons):\n"
+    "1. State plainly whether this option's premium is cheap, fair, or rich right now, weighing the "
+    "IV/HV read above.\n"
+    "2. Weigh what that IV level implies for the profit/loss scenarios shown above — is the premium "
+    "asking a reasonable price for the move it needs, or an expensive one?\n"
+    "3. Search for real, current news and events for this ticker — earnings date, upcoming "
+    "catalysts, sector trends, macro backdrop — that could move the stock enough to matter for THIS "
+    "specific strike and expiration; name the specific catalyst and how it could move price, not a "
+    "generic disclaimer.\n"
+    "4. Give a probability-weighted judgment of the likely outcome by expiration given everything "
+    "above — not a guarantee, a realistic read.\n"
+    "5. Finish with exactly one closing line in this format: \"TRADE — one-sentence summary\" or "
+    "\"HOLD — one-sentence summary\" or \"NO TRADE — one-sentence summary\", where TRADE means this "
+    "specific contract looks like a good risk/reward buy right now, HOLD means wait for a better "
+    "entry (e.g. lower IV or a clearer setup), and NO TRADE means avoid this position entirely.\n"
+    "No hedging, no data disclaimers."
+)
+
+
+def build_opc_prompt(r) -> str:
+    """/opc's AI analysis: hands the model the already-computed IV/HV read,
+    breakeven, and a few illustrative Black-Scholes P/L scenarios at
+    expiration so it can reason about whether the premium is cheap and what
+    it implies for realistic outcomes, spending its live search budget on
+    news/catalysts the app can't compute rather than re-deriving numbers
+    already shown to the user."""
+    opt_label = "call" if r.option_type == "call" else "put"
+    lines = [
+        f"{r.ticker} at ${r.spot:.2f}. ${r.strike:g} {opt_label} expiring {r.expiration} ({r.dte} days out).",
+        f"Premium paid: ${r.premium:.2f} per share (${r.premium * 100 * r.contracts:.0f} for "
+        f"{r.contracts} contract(s)). Breakeven at expiration: ${r.breakeven:.2f}.",
+    ]
+    if r.iv is not None:
+        iv_line = f"Implied volatility: {r.iv:.0%}."
+        if r.hv is not None:
+            iv_line += f" 90-day realized volatility: {r.hv:.0%}."
+        if r.iv_hv is not None:
+            iv_line += f" IV/HV: {r.iv_hv:.2f} ({r.iv_hv_label}) — cheap under 0.9, rich over 1.3."
+        lines.append(iv_line)
+    if r.checkpoints and r.price_pcts:
+        last_checkpoint = max(r.checkpoints)
+        scenario_parts = []
+        for pct in r.price_pcts:
+            cell = r.grid.get((last_checkpoint, pct))
+            if cell:
+                price = r.spot * (1 + pct)
+                scenario_parts.append(f"${price:.0f} ({pct:+.0%}): {cell.pl_pct:+.0%}")
+        if scenario_parts:
+            lines.append("P/L at expiration by hypothetical price: " + "; ".join(scenario_parts) + ".")
+    return "\n".join(lines) + "\n\n" + _OPC_ASK
+
+
 async def get_summary(r: IndicatorResult, detailed: bool = False) -> str:
     if not os.getenv("OPENROUTER_API_KEY", ""):
         log.debug("OPENROUTER_API_KEY not set — skipping LLM summary for %s", r.ticker)

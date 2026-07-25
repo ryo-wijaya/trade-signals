@@ -28,6 +28,31 @@ def black_scholes_delta(
     return n if is_call else n - 1
 
 
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def black_scholes_price(
+    spot: float, strike: float, dte_days: float, iv: float | None,
+    is_call: bool, r: float = 0.045,
+) -> float:
+    """Theoretical per-share option value at `dte_days` days remaining,
+    given a HYPOTHETICAL spot price and an IV held constant from whenever it
+    was fetched -- used by the /opc profit calculator to reprice a contract
+    at future dates/prices. No dividend yield term, same simplification as
+    black_scholes_delta above. dte_days<=0 (or no usable IV, e.g. a stale/
+    unquoted contract) collapses to pure intrinsic value rather than raising,
+    so a thin quote degrades gracefully instead of blocking the calculator."""
+    if dte_days <= 0 or iv is None or iv <= 0 or spot <= 0 or strike <= 0:
+        return max(0.0, spot - strike) if is_call else max(0.0, strike - spot)
+    T = dte_days / 365.0
+    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * math.sqrt(T))
+    d2 = d1 - iv * math.sqrt(T)
+    if is_call:
+        return spot * _norm_cdf(d1) - strike * math.exp(-r * T) * _norm_cdf(d2)
+    return strike * math.exp(-r * T) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+
+
 def _dated_expirations(ticker: str) -> list[tuple[str, int]] | None:
     try:
         expirations = yf.Ticker(ticker).options

@@ -70,14 +70,25 @@ async def send(text: str, chat_id: str | None = None) -> None:
         # across chunks; acceptable because _block output is a single paragraph.
         for chunk in split_message(text):
             payload = {"chat_id": target, "text": chunk, "parse_mode": "HTML"}
-            resp = await client.post(_api("sendMessage"), json=payload)
-            if resp.status_code == 429:
-                retry_after = resp.json().get("parameters", {}).get("retry_after", 1)
-                log.warning("telegram rate limited, retrying after %ss", retry_after)
-                await asyncio.sleep(retry_after)
+            try:
                 resp = await client.post(_api("sendMessage"), json=payload)
-            if resp.status_code != 200:
-                log.error("telegram send failed %d: %s", resp.status_code, resp.text)
+                if resp.status_code == 429:
+                    retry_after = resp.json().get("parameters", {}).get("retry_after", 1)
+                    log.warning("telegram rate limited, retrying after %ss", retry_after)
+                    await asyncio.sleep(retry_after)
+                    resp = await client.post(_api("sendMessage"), json=payload)
+                if resp.status_code != 200:
+                    log.error("telegram send failed %d: %s", resp.status_code, resp.text)
+            except httpx.HTTPError as exc:
+                # A transient network failure (DNS hiccup, connection reset,
+                # timeout) must never propagate out of send() -- confirmed this
+                # used to silently abort an entire multi-message report (e.g.
+                # the ~13-message morning report: per-ticker blocks, relative
+                # strength, cheap ranking, news digest) the instant any single
+                # send() call hit a blip, dropping every message after it with
+                # no retry and nothing visible beyond an uncaught exception in
+                # the scheduler's own logs.
+                log.error("telegram send failed (network error): %s", exc)
 
 
 def split_message(text: str, limit: int = 4000) -> list[str]:

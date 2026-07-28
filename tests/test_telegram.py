@@ -1,5 +1,8 @@
 import asyncio
 
+import httpx
+
+import app.telegram as telegram_mod
 from app.indicators.base import SignalResult
 from app.indicators.engine import IndicatorResult
 from app.telegram import (
@@ -221,6 +224,84 @@ class TestSplitMessage:
         assert len(chunks) > 1
         assert all(len(c) <= 4000 for c in chunks)
         assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, text="ok", json_body=None):
+        self.status_code = status_code
+        self.text = text
+        self._json_body = json_body or {}
+
+    def json(self):
+        return self._json_body
+
+
+class _FakeAsyncClient:
+    """Minimal async-context-manager stand-in for httpx.AsyncClient, driven
+    by a caller-supplied post() implementation so tests can simulate network
+    errors without a real HTTP stack."""
+    def __init__(self, post_fn):
+        self._post_fn = post_fn
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def post(self, url, json):
+        return await self._post_fn(url, json)
+
+
+class TestSendNetworkResilience:
+    def _wire(self, monkeypatch, post_fn):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+        monkeypatch.setattr(telegram_mod.httpx, "AsyncClient", lambda *a, **kw: _FakeAsyncClient(post_fn))
+
+    def test_connection_error_does_not_raise(self, monkeypatch):
+        async def _post(url, json):
+            raise httpx.ConnectError("connection refused")
+        self._wire(monkeypatch, _post)
+
+        asyncio.run(send("hello"))  # must not raise
+
+    def test_timeout_does_not_raise(self, monkeypatch):
+        async def _post(url, json):
+            raise httpx.ReadTimeout("timed out")
+        self._wire(monkeypatch, _post)
+
+        asyncio.run(send("hello"))  # must not raise
+
+    def test_network_error_on_one_message_does_not_block_the_next(self, monkeypatch):
+        # Confirmed live: this used to abort an entire multi-message report
+        # (e.g. the ~13-message morning report) the instant any single send()
+        # call hit a network blip, silently dropping every message after it.
+        calls = {"n": 0}
+
+        async def _post(url, json):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ReadTimeout("timed out")
+            return _FakeResponse(status_code=200)
+        self._wire(monkeypatch, _post)
+
+        async def _send_two():
+            await send("first message hits a network blip")
+            await send("second message should still be attempted")
+        asyncio.run(_send_two())
+        assert calls["n"] == 2
+
+    def test_successful_send_still_works_through_the_same_path(self, monkeypatch):
+        calls = {"n": 0}
+
+        async def _post(url, json):
+            calls["n"] += 1
+            return _FakeResponse(status_code=200)
+        self._wire(monkeypatch, _post)
+
+        asyncio.run(send("hello"))
+        assert calls["n"] == 1
 
 
 class TestCollectOutput:
